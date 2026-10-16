@@ -1,48 +1,56 @@
-# Railway 部署
+# Railway 多账号版本部署
 
 ## 部署步骤
 
-1. 将本次文件推送到 GitHub。在 Railway 创建项目，选择 **Deploy from GitHub repo**，选择 `nguyenvansu300965-netizen/BLUE-v` 的 `main` 分支，Root Directory 留在仓库根目录。
-2. Railway 会读取 `railway.json`，使用根目录 `Dockerfile` 构建。无需另设 Build Command 或 Start Command。
-3. 为此服务添加 **Volume**，挂载路径设为 `/data`。`railway.json` 不会自动创建 Volume，必须手动添加。不要启用多副本：一个 WhatsApp 会话只运行一个实例。
-4. 在服务 Variables 中配置下表中的变量，密码通过 Railway 面板输入，勿提交到仓库。
-5. 在 Networking 中生成 HTTPS 域名，将该完整地址填入 `PUBLIC_ORIGIN`，例如 `https://blue-v-production.up.railway.app`。不要填路径。保存变量并部署。
-6. 访问生成的 HTTPS 域名，输入管理员账号密码。点击连接 WhatsApp，在手机「已关联的设备」扫码，再测试真实收发。
-7. 在自动回复编辑器载入示例，修改文案和图片，设置选项目标节点，启用并保存。
+1. Railway 选择 **Deploy from GitHub repo**，连接 `nguyenvansu300965-netizen/BLUE-v` 的 `main` 分支，Root Directory 使用仓库根目录。
+2. 根目录 `railway.json` 自动选择 `Dockerfile`，使用 Node.js 24，无需覆盖 Build / Start Command。
+3. 为服务添加 **Volume**，挂载到 `/data`。配置文件不会自动创建卷。用户、订阅、消息、流程、图片和所有 WhatsApp 登录凭据都依赖这个卷。
+4. 在 Networking 生成 HTTPS 域名，在 Variables 中配置下表。初次部署可先生成域名，再设置变量并重新部署。
+5. 访问该 HTTPS 域名，用 `ADMIN_USER` / `ADMIN_PASSWORD` 在网页登录，进入左侧「超级管理员」后台。
+6. 普通用户可自由注册，默认待开通。管理员选套餐、勾选使用权限、设置未来到期时间，保存后用户即可添加对应数量的号码。
+7. 每个号码在「连接设备」中独立扫码，然后配置该号码的自动流程并实机测试。
 
-## 变量
+## 环境变量
 
 | 变量 | 设置 |
 | --- | --- |
-| `ADMIN_USER` | 管理员用户名，例如 `admin`；不要包含冒号 |
-| `ADMIN_PASSWORD` | 必填，使用长随机密码 |
-| `PUBLIC_ORIGIN` | 必填，你生成的完整 HTTPS 域名；用于同源请求验证 |
+| `ADMIN_USER` | 首次启动创建的超级管理员用户名，例如 `admin`；4–64 位字母、数字、点、横线或 @ |
+| `ADMIN_PASSWORD` | 首次启动的管理员密码，至少 12 位，使用长随机密码 |
+| `PUBLIC_ORIGIN` | 必填，完整 HTTPS 域名，例如 `https://blue-v-production.up.railway.app`，勿填路径 |
 | `HOST` | `0.0.0.0`，Dockerfile 已设置 |
-| `NODE_ENV` | `production`，Dockerfile 已设置；未设置管理员账号密码时拒绝启动 |
-| `DATA_DIR` | `/data`，Dockerfile 已设置 |
-| `AUTH_DIR` | `/data/auth`，Dockerfile 已设置 |
-| `AUTO_CONNECT` | 建议 `true`，启动后连接 WhatsApp，复用已有登录；没有会话时生成二维码 |
+| `NODE_ENV` | `production`，Dockerfile 已设置，登录 Cookie 要求 HTTPS |
+| `DATA_DIR` | `/data`，Dockerfile 已设置；必须挂载持久化 Volume |
+| `AUTO_CONNECT` | 建议 `true`；仅恢复已有登录且仍在套餐配额与有效订阅内的号码 |
+| `TRUST_PROXY` | Railway 单层边缘代理部署可设 `1`，用于识别注册/登录限流的客户 IP；其他环境仅在可信代理后启用 |
 | `PORT` | 使用 Railway 自动注入值，无需填写 |
 
-`.env.example` 仅作为填写参考，程序不会自动加载 `.env`。本服务使用 HTTP Basic 管理员认证，必须使用 Railway HTTPS 域名访问。所有页面和业务 API 均需认证；只有 `/healthz` 公开用于平台检查。
+`ADMIN_USER` / `ADMIN_PASSWORD` 仅用于空数据库初始化。已有管理员时修改这两个变量不会重置数据库密码。密码请在 Railway Variables 中安全输入，不提交到 Git。本版本已替换 HTTP Basic 弹窗，改为用户注册及网页登录。
 
-## 持久化和检查
+## 套餐与运行约束
 
-- `/data/auth`：敏感登录凭据；`/data/flows.json`：流程；`/data/media`：图片。缺少 Volume 时重新部署会丢失这些数据。不要与其他服务共用同一登录目录。
-- 健康检查 `GET /healthz` 返回 `{"ok":true}` 仅代表 Web 服务就绪，不代表 WhatsApp 已登录。后台状态显示「已连接」后再测试图片和按钮。
-- 重启后消息历史和客户当前分支步骤会重置，已保存流程和登录凭据从 Volume 恢复。`AUTO_CONNECT=true` 可恢复连接；无法恢复时需重新扫码。
-- 关闭服务休眠 / Serverless 功能（如果启用），保持常驻连接，避免无人访问时无法及时回复。具体计费与能力以 Railway 当前套餐为准。
-- Railway 出站网络须能访问 WhatsApp 的 HTTPS/WebSocket 和媒体上传服务；在受限网络中按实际错误放行相关目标。本地云环境的 403 限制不代表 Railway 网络同样受限。
-- 原生交互按钮为实验功能，需用实际账号和手机验证；不显示时切回数字菜单模式。
+- 基础版 1 个号码，高级版 5 个，VIP 10 个；管理员通过后台人工开通或续期，没有自动支付/扣款功能。
+- 每个用户独立数据；停用或到期后停止连接和自动回复，超配额号码停止但不删除，恢复套餐后可重新连接。
+- 仅运行一个服务副本、一个 Node 进程，不使用集群共用 WhatsApp 凭据。`railway.json` 配置 1 个副本。
+- 关闭休眠 / Serverless 功能（如果启用），保持连接常驻。实际费用和能力以 Railway 套餐为准；10 个号码意味着更多长连接和内存，应观察服务资源。
+- 健康检查 `/healthz` 返回 `{"ok":true}` 仅代表 Web 服务启动，不代表 WhatsApp 已连接。
+- 备份时先停止服务并完整备份 `/data`；SQLite WAL/SHM、用户数据库和号码凭据需一起保留。不要将数据卷公开。
+- 每个号码保留最新 500 条消息；客户当前自动流程步骤在重启后重置。登录凭据、订阅及流程从卷恢复。
+- WhatsApp HTTPS/WebSocket 与媒体上传必须可达。原生按钮仍需实际客户端验证，不显示时切回数字菜单。
+
+## 旧版本升级
+
+若 Railway 已部署旧单账号版本：先停止并备份 `/data`，保持原有 `ADMIN_USER` / `ADMIN_PASSWORD`，部署后这组凭据会初始化新的超级管理员。旧 `AUTH_DIR` 变量可移除，新版本按用户和号码保存凭据。旧根目录数据不会自动绑定用户；按 [README 升级步骤](README.md#从单账号版本升级) 安全复制到管理员的号码目录，或重新扫码。
 
 ## 常见问题
 
-- **启动失败，提示 ADMIN_USER / ADMIN_PASSWORD**：补齐两个变量重新部署。
-- **健康检查失败**：检查启动日志、`HOST=0.0.0.0`，不要覆盖 Railway 的 `PORT`。
-- **页面能打开，保存或连接返回 403**：确保 `PUBLIC_ORIGIN` 与浏览器地址栏的 HTTPS 域名完全相同；更换自定义域名后同步更新。
-- **重新部署后要重新登录 / 图片消失**：确认 Volume 挂在本服务的 `/data`，并检查两个目录变量没有被覆盖。
+- **服务启动失败**：首次启动检查管理员变量和密码长度；生产模式检查 `PUBLIC_ORIGIN` 为 HTTPS，使用 Node 24。
+- **注册后不能添加号码**：这是待开通状态，管理员在后台开通权限、选择套餐和到期时间。
+- **保存 / 连接返回 403**：检查订阅是否有效、该号码是否超配额、`PUBLIC_ORIGIN` 是否与地址栏一致。
+- **重新部署后用户或登录丢失**：检查 Volume 是否挂载到本服务的 `/data`，不要覆盖 `DATA_DIR` 指向临时目录。
+- **降级后号码不可用**：按创建顺序保留套餐配额内号码，可以删除不需要的号码或升级套餐。
+- **收到 429**：注册或登录触发限流；确认部署处于可信 Railway 代理后且配置 `TRUST_PROXY=1`，不要无条件信任其他来源的转发头。
 
-## 本地检查
+## 本地验证
 
 ```sh
 npm ci
@@ -51,4 +59,4 @@ npm test
 docker build -t blue-v .
 ```
 
-容器运行时须提供上述账号、密码、PUBLIC_ORIGIN，挂载 `/data` 并映射端口。不要把密码写入 Dockerfile 或 railway.json。
+容器启动时通过运行环境提供变量并挂载 `/data`，不要将密码写入镜像。

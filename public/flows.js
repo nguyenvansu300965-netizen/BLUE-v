@@ -2,6 +2,8 @@
   const el = id => document.getElementById(id);
   let config = { enabled: false, mode: 'numbered', nodes: [] };
   let busy = false;
+  let base = null;
+  let loadVersion = 0;
   const status = text => { el('flow-notice').textContent = text; };
   const field = (label, input) => { const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label), input); return wrapper; };
   function input(value, change, multiline = false) {
@@ -20,18 +22,20 @@
         config.nodes.splice(index, 1); draw();
       }));
       card.append(head, field('节点名称', input(node.name, v => { node.name = v; })), field('触发词（以逗号分隔；分支节点可留空）', input(node.triggers.join(', '), v => { node.triggers = v.split(/[,，]/).map(t => t.trim()).filter(Boolean); })), field('回复文案', input(node.text, v => { node.text = v; }, true)));
-      const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `/api/media/${node.image}`;
+      const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `${base}/media/${node.image}`;
       const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
       file.onchange = async () => {
         const upload = file.files[0]; if (!upload) return;
         if (upload.size > 5 * 1024 * 1024) return status('图片最大 5MB');
+        const uploadBase = base, version = loadVersion;
         busy = true; el('flow-save').disabled = true; status('正在上传图片…');
         try {
-          const response = await fetch('/api/media', { method: 'POST', headers: { 'Content-Type': upload.type }, body: upload });
+          const response = await fetch(`${uploadBase}/media`, { method: 'POST', headers: { 'Content-Type': upload.type }, body: upload });
           const result = await response.json(); if (!response.ok) throw new Error(result.error);
-          node.image = result.id; image.src = `/api/media/${node.image}`; image.hidden = false; status('图片已上传，保存流程后生效');
-        } catch (error) { status(error.message); }
-        finally { busy = false; el('flow-save').disabled = false; }
+          if (version !== loadVersion) return;
+          node.image = result.id; image.src = `${base}/media/${node.image}`; image.hidden = false; status('图片已上传，保存流程后生效');
+        } catch (error) { if (version === loadVersion) status(error.message); }
+        finally { busy = false; if (version === loadVersion) el('flow-save').disabled = !base; }
       };
       card.append(field('回复图片（可选，最大 5MB）', file), image, button('移除图片', () => { node.image = ''; image.hidden = true; }));
       const options = document.createElement('div'); options.className = 'flow-options';
@@ -61,14 +65,30 @@
     ] }; draw(); status('示例已载入，请修改内容后启用并保存');
   };
   el('flow-save').onclick = async () => {
-    if (busy) return;
+    if (busy || !base) return;
+    const saveBase = base, version = loadVersion;
     el('flow-save').disabled = true;
     try {
-      const response = await fetch('/api/flows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+      const response = await fetch(`${saveBase}/flows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
       const result = await response.json(); if (!response.ok) throw new Error(result.error);
-      status('流程已保存，立即生效');
-    } catch (error) { status(error.message); }
-    finally { el('flow-save').disabled = false; }
+      if (version === loadVersion) status('流程已保存，立即生效');
+    } catch (error) { if (version === loadVersion) status(error.message); }
+    finally { if (version === loadVersion) el('flow-save').disabled = !base; }
   };
-  fetch('/api/flows').then(r => { if (!r.ok) throw new Error('无法加载流程'); return r.json(); }).then(data => { config = data; draw(); }).catch(error => { status(error.message); el('flow-save').disabled = true; });
+  async function load() {
+    const version = ++loadVersion;
+    base = window.flowBase();
+    config = { enabled: false, mode: 'numbered', nodes: [] };
+    el('flow-nodes').replaceChildren();
+    el('flow-notice').textContent = '';
+    for (const id of ['flow-save', 'flow-add', 'flow-example', 'flow-enabled', 'flow-mode']) el(id).disabled = !base;
+    if (!base) return;
+    try {
+      const data = await window.workspaceApi(`${base}/flows`);
+      if (version !== loadVersion) return;
+      config = data; draw();
+    } catch (error) { if (version === loadVersion) { status(error.message); el('flow-save').disabled = true; } }
+  }
+  window.addEventListener('account-changed', () => { void load(); });
+  void load();
 })();
