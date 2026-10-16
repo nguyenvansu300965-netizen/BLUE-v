@@ -49,12 +49,22 @@ try {
   await page.waitForFunction(() => Boolean(window.fixtureHandlers['chat.new_message']));
   for (let i = 0; i < 20 && !received.some(e => e.type === 'qr'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.ok(received.some(e => e.type === 'qr'));
+  const beforeEmptyIdentity = received.length;
   await page.evaluate(() => {
+    window.WPP.conn.isMainReady = () => true;
+    window.WPP.conn.getMyUserId = () => undefined;
+    window.fixtureHandlers['conn.main_ready']();
+  });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.ok(!received.slice(beforeEmptyIdentity).some(event => event.type === 'state' && event.status === 'connected'), 'main_ready without an identity must not mean linked');
+  await page.evaluate(() => {
+    window.WPP.conn.getMyUserId = () => ({ _serialized: '123456789@c.us' });
     window.WPP.conn.isMainReady = () => true;
     window.fixtureHandlers['conn.main_ready']();
     window.fixtureHandlers['chat.new_message']({ id: { id: 'REPLY', remote: { _serialized: '123456789@c.us' }, fromMe: false }, body: '产品介绍', type: 'buttons_response', selectedButtonId: 'flow:welcome:0', quotedStanzaID: 'TEXT', t: Math.floor(Date.now() / 1000), notifyName: 'Customer', isMdHistoryMsg: false });
   });
   for (let i = 0; i < 20 && !received.some(e => e.type === 'message'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(received.some(event => event.type === 'state' && event.status === 'connected' && event.user?.id === '123456789@c.us'), 'identity becoming available must emit connected even when main_ready remains true');
   const reply = normalizeWaMessage(received.find(e => e.type === 'message').message);
   assert.equal(reply.selection, 'flow:welcome:0'); assert.equal(reply.quotedId, 'TEXT'); assert.equal(reply.jid, '123456789@s.whatsapp.net');
   await page.evaluate(() => {

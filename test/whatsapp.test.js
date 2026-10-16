@@ -86,3 +86,35 @@ test('startup without a QR times out, closes its browser and becomes retryable',
     await rt.connect(); assert.equal(rt.state.status, 'connecting');
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+test('different owners have independent WhatsApp profiles, connection identities and message stores', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-owner-isolation-')); const store = new Store(dir); const runtimes = [], handlers = [];
+  try {
+    await store.bootstrap('test-admin', 'test-password-123');
+    const admin = store.byName('test-admin');
+    for (const username of ['owner-one', 'owner-two']) {
+      const user = await store.createUser(username, '123456');
+      store.grant(admin.id, user.id, { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 60000).toISOString() });
+      const rt = await new WhatsAppAccount(store.createAccount(user.id, username), store, dir, { createClient: ({ profileDir, onEvent }) => {
+        handlers.push(onEvent);
+        assert.ok(profileDir.includes(path.join('tenants', user.id)));
+        return { start: async () => {}, close: async () => {} };
+      } }).init();
+      runtimes.push(rt); await rt.connect();
+    }
+    const [a, b] = runtimes;
+    assert.notEqual(a.profileDir, b.profileDir);
+    await handlers[0]({ type: 'state', status: 'connected', user: { id: '123456789@c.us' } });
+    assert.equal(a.state.user.id, '123456789@s.whatsapp.net');
+    assert.equal(b.state.status, 'connecting'); assert.equal(b.state.user, null);
+    await handlers[1]({ type: 'state', status: 'connected', user: null });
+    assert.equal(b.state.status, 'connecting'); assert.equal(b.state.user, null);
+    assert.throws(() => b.requireConnected(), /扫码/);
+    await assert.rejects(access(b.sessionMarker), 'missing identity must never persist a registered session');
+    await handlers[1]({ type: 'qr', code: 'owner-two-only' });
+    assert.equal(b.state.status, 'qr'); assert.equal(a.state.status, 'connected');
+    await handlers[0]({ type: 'message', message: { id: 'PRIVATE', chatId: '987654321@c.us', body: 'Owner one private message', timestamp: Date.now() / 1000 } });
+    assert.equal(store.messages(a.account.id).length, 1); assert.deepEqual(store.messages(b.account.id), []);
+    assert.equal(b.snapshot().user, null);
+  } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true }); }
+});

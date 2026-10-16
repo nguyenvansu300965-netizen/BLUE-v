@@ -3,21 +3,24 @@ const planNames = { basic: '基础套餐', pro: '高级套餐', vip: 'VIP 套餐
 const statusNames = { idle: '未连接', connecting: '连接中', qr: '等待扫码', connected: '已连接', disconnected: '重连中', logged_out: '已退出', blocked: '权限受限', error: '连接失败' };
 let me = null, accounts = [], selectedAccount = '', selectedThread = '', draftPhone = '', messages = [], stream = null, registration = false, sending = false, connected = false;
 let attachmentDraft = null, passwordTarget = null;
+let accountsRequest = 0, creatingAccount = false;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { stream?.close(); stream = null; }
 function showAuth() {
   authEpoch++; clearAttachment(); closePasswordDialog();
-  closeStream(); me = null; accounts = []; selectedAccount = ''; messages = [];
+  closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
+  $('account-select').replaceChildren(); $('account-select').disabled = false; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('send').disabled = true;
   $('workspace').hidden = true; $('auth-screen').hidden = false;
   $('device-dialog').close(); $('qr').hidden = true; $('qr').removeAttribute('src'); $('text').value = ''; $('messages').replaceChildren();
   window.dispatchEvent(new Event('account-changed'));
 }
 async function api(url, options = {}) {
   const epoch = authEpoch;
-  const response = await fetch(url, { ...options, headers: { ...(options.body && typeof options.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
+  const expectedUser = me?.id;
+  const response = await fetch(url, { ...options, headers: { ...(expectedUser && !url.startsWith('/api/auth/') ? { 'X-Workspace-User': expectedUser } : {}), ...(options.body && typeof options.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
   const result = await response.json();
-  if (!response.ok) { if (response.status === 401 && epoch === authEpoch && !url.includes('/auth/login')) showAuth(); throw new Error(result.error || '请求失败'); }
+  if (!response.ok) { if ((response.status === 401 || result.code === 'SESSION_CHANGED') && epoch === authEpoch && !url.includes('/auth/login')) { showAuth(); if (result.code === 'SESSION_CHANGED') $('auth-notice').textContent = result.error; } throw new Error(result.error || '请求失败'); }
   return result;
 }
 window.isSuperAdmin = () => me?.role === 'admin';
@@ -39,11 +42,12 @@ function updateMembership(user) {
   $('add-account').disabled = !user.active || accounts.length >= user.limit;
   $('quota').textContent = `${accounts.length} / ${user.limit} 个号码`;
 }
-async function refreshAccounts() {
-  if (!me) return;
-  const epoch = authEpoch;
+async function refreshAccounts(preferredId) {
+  if (!me || (creatingAccount && !preferredId)) return false;
+  const epoch = authEpoch, owner = me.id, request = ++accountsRequest;
   const data = await api('/api/accounts');
-  if (epoch !== authEpoch || !me) return;
+  if (epoch !== authEpoch || !me || request !== accountsRequest) return false;
+  if (data.user.id !== owner || data.accounts.some(account => account.user_id !== owner)) { showAuth(); $('auth-notice').textContent = '登录账号已变更，请重新登录'; return false; }
   accounts = data.accounts; updateMembership(data.user);
   const select = $('account-select'); select.replaceChildren();
   const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = accounts.length ? '请选择号码' : '尚未添加号码'; select.append(placeholder);
@@ -51,34 +55,37 @@ async function refreshAccounts() {
     const option = document.createElement('option'); option.value = account.id;
     option.textContent = `${account.label}${account.allowed ? '' : ' · 配额/订阅受限'}`; option.disabled = !account.allowed; select.append(option);
   }
-  if (!accounts.some(a => a.id === selectedAccount && a.allowed)) {
-    selectedAccount = accounts.find(a => a.allowed)?.id || '';
-    switchAccount();
-  }
+  const candidate = preferredId || selectedAccount;
+  const next = accounts.some(a => a.id === candidate && a.allowed) ? candidate : accounts.find(a => a.allowed)?.id || '';
+  if (next !== selectedAccount) { selectedAccount = next; switchAccount(); }
   select.value = selectedAccount;
   $('open-device').disabled = !selectedAccount;
   // Excess accounts can still be removed from the list using the delete action.
   $('remove-account').disabled = !accounts.length;
+  return true;
 }
 async function enter(user) {
-  authEpoch++;
-  me = user; $('auth-screen').hidden = true; $('workspace').hidden = false; $('password').value = ''; showPage('chat');
+  showAuth(); authEpoch++;
+  me = user; updateMembership(user); $('auth-screen').hidden = true; $('workspace').hidden = false; $('password').value = ''; showPage('chat');
   await refreshAccounts();
 }
 function switchAccount() {
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
-  $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = accounts.find(a => a.id === selectedAccount)?.label || ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
+  $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = selectedAccount ? `平台账号：${me?.username || ''} · 号码备注：${accounts.find(a => a.id === selectedAccount)?.label || ''}` : ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
   $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
   window.dispatchEvent(new Event('account-changed'));
   if (!selectedAccount) return;
-  const id = selectedAccount;
-  stream = new EventSource(`/api/accounts/${id}/events`);
-  stream.onmessage = event => { if (id === selectedAccount) renderState(JSON.parse(event.data)); };
-  stream.addEventListener('revoked', () => { if (id !== selectedAccount) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
-  stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
+  const id = selectedAccount, epoch = authEpoch, owner = me.id;
+  const source = new EventSource(`/api/accounts/${id}/events?workspaceUser=${encodeURIComponent(owner)}`); stream = source;
+  const current = () => stream === source && id === selectedAccount && epoch === authEpoch && owner === me?.id;
+  source.onmessage = event => { if (current()) renderState(JSON.parse(event.data)); };
+  source.addEventListener('revoked', () => { if (!current()) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
+  source.onerror = () => { if (current()) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
 }
 function renderState(state) {
+  if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;
+  if (state.status === 'connected' && !/^[0-9]+@(s\.whatsapp\.net|c\.us|lid)$/.test(state.user?.id || '')) state = { ...state, status: 'connecting', user: null, progress: '正在核实 WhatsApp 登录身份，尚未取得当前号码…' };
   connectionStatus = state.status;
   connected = state.status === 'connected'; messages = state.messages;
   $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '实时接收已就绪') : '消息接收初始化中…');
@@ -93,7 +100,7 @@ function renderState(state) {
   document.querySelector('.qr-placeholder').hidden = Boolean(state.qr) || connected;
   $('connection-hint').textContent = connected ? '✓ 已关联，可以收发消息' : state.error || (state.qr ? '请使用手机 WhatsApp 扫码' : state.progress || (state.status === 'connecting' ? '正在获取二维码…' : '点击下方按钮连接 WhatsApp'));
   $('account').textContent = state.user ? `当前号码：${state.user.name || ''} ${state.user.id || ''}` : '';
-  $('device-label').textContent = state.account.label;
+  $('device-label').textContent = `平台账号：${me.username} · 号码备注：${state.account.label}`;
   $('connect').disabled = connected || state.status === 'qr' || state.authenticated;
   $('connect').textContent = state.authenticated && !connected ? '正在完成登录…' : state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
   const last = state.automation.last;
@@ -196,9 +203,18 @@ $('auth-form').onsubmit = async event => {
 $('signout').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); showAuth(); } catch (error) { notice(error.message); } };
 $('account-select').onchange = () => { selectedAccount = $('account-select').value; switchAccount(); };
 $('add-account').onclick = async () => {
+  if (creatingAccount || !me) return;
   const label = prompt('请输入此 WhatsApp 号码的备注名称'); if (!label) return;
-  try { const result = await api('/api/accounts', { method: 'POST', body: JSON.stringify({ label }) }); selectedAccount = result.account.id; await refreshAccounts(); switchAccount(); $('device-dialog').showModal(); }
-  catch (error) { notice(error.message); }
+  const epoch = authEpoch, owner = me.id;
+  creatingAccount = true; accountsRequest++; $('add-account').disabled = true; $('account-select').disabled = true;
+  try {
+    const result = await api('/api/accounts', { method: 'POST', body: JSON.stringify({ label }) });
+    if (epoch !== authEpoch || owner !== me?.id) return;
+    if (result.account.user_id !== owner) throw new Error('号码归属不匹配，请重新登录');
+    const applied = await refreshAccounts(result.account.id);
+    if (applied && epoch === authEpoch && selectedAccount === result.account.id) $('device-dialog').showModal();
+  } catch (error) { if (epoch === authEpoch) notice(error.message); }
+  finally { if (epoch === authEpoch) { creatingAccount = false; $('account-select').disabled = false; if (me) updateMembership(me); } }
 };
 $('remove-account').onclick = async () => {
   let choice = selectedAccount || accounts[0]?.id;

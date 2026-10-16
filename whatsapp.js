@@ -39,7 +39,7 @@ export class WhatsAppAccount {
   }
   requireConnected() {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
-    if (!this.client || this.state.status !== 'connected') throw new AppError(409, '请先扫码连接此号码');
+    if (!this.client || this.state.status !== 'connected' || !this.state.user?.id) throw new AppError(409, '请先扫码连接此号码');
   }
   snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
@@ -67,7 +67,9 @@ export class WhatsAppAccount {
       if (current === this.generation && !this.state.authenticated && this.state.status !== 'connected') { clearTimeout(this.startupTimer); this.update({ status: 'qr', qr: image, error: null, progress: null }); }
     } else if (event.type === 'state') {
       if (!['connected', 'connecting', 'disconnected', 'qr'].includes(event.status)) return;
-      const user = event.user?.id ? { id: toStoredJid(event.user.id) } : null;
+      const user = typeof event.user?.id === 'string' && /^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(event.user.id) ? { id: toStoredJid(event.user.id) } : null;
+      const missingIdentity = event.status === 'connected' && !user;
+      if (missingIdentity) event = { ...event, status: 'connecting', authenticated: Boolean(event.authenticated) };
       if (event.authenticated && !this.state.authenticated && event.status !== 'connected') {
         clearTimeout(this.startupTimer);
         this.startupTimer = setTimeout(() => {
@@ -77,7 +79,7 @@ export class WhatsAppAccount {
         this.startupTimer.unref();
       }
 
-      this.update({ status: event.status, user, authenticated: Boolean(event.authenticated || event.status === 'connected'), progress: event.authenticated && event.status !== 'connected' ? '已扫码，正在关联设备并同步，请勿重复扫码或重新连接…' : this.state.progress, qr: event.authenticated || event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? 'WhatsApp 连接中断，浏览器正在重连' : null });
+      this.update({ status: event.status, user, authenticated: Boolean(event.authenticated || event.status === 'connected'), progress: missingIdentity ? '正在核实 WhatsApp 登录身份，尚未取得当前账号，请等待二维码或登录完成…' : event.authenticated && event.status !== 'connected' ? '已扫码，正在关联设备并同步，请勿重复扫码或重新连接…' : this.state.progress, qr: event.authenticated || event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? 'WhatsApp 连接中断，浏览器正在重连' : null });
       if (event.status === 'connected') {
         clearTimeout(this.startupTimer);
         await mkdir(this.dir, { recursive: true, mode: 0o700 });

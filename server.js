@@ -85,6 +85,10 @@ app.use('/api', (req, res, next) => {
   req.sessionToken = token(req);
   req.user = store.session(req.sessionToken);
   if (!req.user) throw new AppError(401, '请先登录');
+  const expectedUser = req.get('X-Workspace-User') || req.query.workspaceUser;
+  if (expectedUser && expectedUser !== req.user.id) {
+    const error = new AppError(409, '登录账号已在其他页面切换，请重新登录'); error.code = 'SESSION_CHANGED'; throw error;
+  }
   next();
 });
 app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); setCookie(res, '', 0); reconcile(); res.json({ ok: true }); });
@@ -268,7 +272,7 @@ app.use(express.static(path.join(root, 'public')));
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   const status = error instanceof AppError ? error.status : [400, 404, 413].includes(error.status) ? error.status : 500;
-  res.status(status).json({ error: status === 500 ? '操作失败，请检查服务存储及连接' : status === 413 ? '文件或配置超过大小限制' : status === 404 ? '资源不存在' : error.message });
+  res.status(status).json({ ...(error.code === 'SESSION_CHANGED' ? { code: error.code } : {}), error: status === 500 ? '操作失败，请检查服务存储及连接' : status === 413 ? '文件或配置超过大小限制' : status === 404 ? '资源不存在' : error.message });
 });
 const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', error => {
   if (error) { console.error(`Unable to start server: ${error.code || 'listen failed'}`); process.exit(1); }

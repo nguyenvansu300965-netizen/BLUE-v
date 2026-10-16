@@ -69,6 +69,15 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
     assert.equal((await bob.request(base, { method: 'DELETE' })).status, 404);
     const state = await (await alice.request(`${base}/state`)).json(); assert.equal(state.status, 'idle'); assert.deepEqual(state.messages, []);
+    assert.equal(state.user, null); assert.equal(state.account.user_id, aliceUser.id);
+    const bobState = await (await bob.request(`/api/accounts/${bobAccount.id}/state`)).json();
+    assert.equal(bobState.status, 'idle'); assert.equal(bobState.user, null); assert.equal(bobState.account.user_id, bobUser.id);
+    const mismatch = await bob.request('/api/accounts', { method: 'POST', headers: { 'X-Workspace-User': aliceUser.id }, body: { label: 'Wrong browser tab' } });
+    assert.equal(mismatch.status, 409); assert.equal((await mismatch.json()).code, 'SESSION_CHANGED');
+    assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/events?workspaceUser=${aliceUser.id}`)).status, 409);
+    assert.equal((await alice.request('/api/accounts', { headers: { 'X-Workspace-User': aliceUser.id } })).status, 200);
+    assert.equal((await (await bob.request('/api/accounts')).json()).accounts.length, 1, 'wrong browser identity must not create a number');
+
     assert.equal((await alice.request(`${base}/messages`, { method: 'POST', body: { phone: 'bad', text: 'hello' } })).status, 400);
     assert.equal((await alice.request(`${base}/messages`, { method: 'POST', body: { phone: '8613800138000', text: 'hello' } })).status, 409);
     assert.equal((await alice.request(`${base}/messages`, { method: 'POST', body: { jid: '123456789@lid', text: 'hello' } })).status, 400);

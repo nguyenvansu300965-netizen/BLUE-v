@@ -122,10 +122,16 @@ export function installWaBridge() {
     watchMessageStore(wpp);
     try {
       const ready = wpp.conn.isMainReady();
-      authenticated = authenticated || ready || wpp.conn.isAuthenticated();
-      const status = ready ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
-      const user = ready ? { id: wid(wpp.conn.getMyUserId()) } : null;
-      if (status !== lastState) { lastState = status; emit({ type: 'state', status, user, authenticated }); }
+      let identity = '';
+      if (ready) for (const name of ['getMyUserId', 'getMyUserWid', 'getMyUserLid']) {
+        try { const candidate = wid(wpp.conn[name]?.()); if (/^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(candidate)) { identity = candidate; break; } } catch { /* Identity modules may load after main_ready. */ }
+      }
+      const verifiedReady = Boolean(ready && identity);
+      authenticated = authenticated || verifiedReady || wpp.conn.isAuthenticated();
+      const status = verifiedReady ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
+      const user = verifiedReady ? { id: identity } : null;
+      const stateKey = `${status}:${identity}:${authenticated}`;
+      if (stateKey !== lastState) { lastState = stateKey; emit({ type: 'state', status, user, authenticated }); }
       if (!authenticated && !domQrSeen) {
         const code = await wpp.conn.getAuthCode();
         publishCode(code?.fullCode);

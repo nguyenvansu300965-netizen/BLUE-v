@@ -28,7 +28,7 @@ test('subscription expiry blocks account creation and sends; messages stay isola
 
     runtime = await new WhatsAppAccount(a, store, dir).init();
     let ended = false;
-    runtime.client = { close: async () => { ended = true; } }; runtime.state.status = 'connected';
+    runtime.client = { close: async () => { ended = true; } }; runtime.state.status = 'connected'; runtime.state.user = { id: '123456789@s.whatsapp.net' };
     runtime.requireConnected();
     store.db.prepare('UPDATE users SET expires_at=? WHERE id=?').run(Date.now() - 1, user.id);
     assert.equal(entitlement(store.user(user.id)).active, false);
