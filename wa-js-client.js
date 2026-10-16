@@ -177,7 +177,7 @@ export class WaJsClient {
     const proxyValue = process.env.CHROMIUM_PROXY_SERVER || process.env.HTTPS_PROXY || process.env.https_proxy;
     const proxy = proxyValue ? new URL(proxyValue) : null;
     if (proxy) args.push(`--proxy-server=${proxy.protocol}//${proxy.host}`);
-    this.launching = this.launch({ executablePath, userDataDir: this.profileDir, headless: true, args, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, protocolTimeout: 120000 });
+    this.launching = this.launch({ executablePath, userDataDir: this.profileDir, headless: true, args, timeout: 60000, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, protocolTimeout: 120000 });
     this.browser = await this.launching;
     if (this.closed) { await this.browser.close(); return; }
     this.browser.on('disconnected', () => { if (!this.closed) this.onEvent({ type: 'closed' }); });

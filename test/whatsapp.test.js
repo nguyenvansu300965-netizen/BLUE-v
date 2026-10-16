@@ -126,3 +126,27 @@ test('different owners have independent WhatsApp profiles, connection identities
     assert.equal(b.state.user.phoneNumber, '447700900123'); assert.equal(a.state.user.phoneNumber, '123456789');
   } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true }); }
 });
+
+test('a third browser failure reports process limits and leaves two other owners connected', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-third-browser-')); const store = new Store(dir); const runtimes = [], handlers = [], closed = [], failures = [];
+  try {
+    await store.bootstrap('test-admin', '123456');
+    const admin = store.byName('test-admin');
+    for (let index = 0; index < 3; index++) {
+      const user = await store.createUser(`browser-user-${index}`, '123456');
+      store.grant(admin.id, user.id, { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 60000).toISOString() });
+      const rt = await new WhatsAppAccount(store.createAccount(user.id, 'One'), store, dir, {
+        sampleResources: async () => ({ memoryMb: 2000, memoryLimitMb: 24576, oomKills: 0, pids: 512, pidsLimit: 512 }),
+        logFailure: failure => failures.push(failure),
+        createClient: ({ onEvent }) => { handlers[index] = onEvent; return { start: async () => { if (index === 2) throw Object.assign(new Error('pthread_create: Resource temporarily unavailable'), { code: 'EAGAIN' }); }, close: async () => { closed.push(index); } }; }
+      }).init();
+      runtimes.push(rt); await rt.connect();
+      if (index < 2) await handlers[index]({ type: 'state', status: 'connected', user: { id: `${123456789 + index}@c.us` } });
+    }
+    assert.equal(runtimes[0].state.status, 'connected'); assert.equal(runtimes[1].state.status, 'connected');
+    assert.equal(runtimes[2].state.status, 'error'); assert.equal(runtimes[2].client, null);
+    assert.match(runtimes[2].state.error, /BROWSER_PROCESS_LIMIT/); assert.match(runtimes[2].state.error, /24576/);
+    assert.deepEqual(closed, [2]); assert.equal(failures.length, 1); assert.equal(failures[0].code, 'BROWSER_PROCESS_LIMIT');
+    assert.equal(failures[0].accountId, runtimes[2].account.id);
+  } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true }); }
+});
