@@ -11,6 +11,7 @@ function showAuth() {
   const hadIdentity = Boolean(me);
   authEpoch++; clearAttachment(); closePasswordDialog();
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
+  $('self-number').hidden = true; $('self-number').textContent = '';
   $('account-select').replaceChildren(); $('account-select').disabled = false; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('send').disabled = true;
   $('workspace').hidden = true; $('auth-screen').hidden = false;
   $('device-dialog').close(); $('qr').hidden = true; $('qr').removeAttribute('src'); $('text').value = ''; $('messages').replaceChildren();
@@ -63,7 +64,7 @@ async function refreshAccounts(preferredId) {
   const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = accounts.length ? '请选择号码' : '尚未添加号码'; select.append(placeholder);
   for (const account of accounts) {
     const option = document.createElement('option'); option.value = account.id;
-    option.textContent = `${account.label}${account.allowed ? '' : ' · 配额/订阅受限'}`; option.disabled = !account.allowed; select.append(option);
+    option.textContent = `${account.label}${account.number ? ` · +${account.number}` : ''}${account.allowed ? '' : ' · 配额/订阅受限'}`; option.disabled = !account.allowed; select.append(option);
   }
   const candidate = preferredId || selectedAccount;
   const next = accounts.some(a => a.id === candidate && a.allowed) ? candidate : accounts.find(a => a.allowed)?.id || '';
@@ -80,6 +81,7 @@ async function enter(user) {
   await refreshAccounts();
 }
 function switchAccount() {
+  $('self-number').hidden = true; $('self-number').textContent = '';
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = selectedAccount ? `平台账号：${me?.username || ''} · 号码备注：${accounts.find(a => a.id === selectedAccount)?.label || ''}` : ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
@@ -109,7 +111,16 @@ function renderState(state) {
   $('qr').hidden = !state.qr; if (state.qr) $('qr').src = state.qr;
   document.querySelector('.qr-placeholder').hidden = Boolean(state.qr) || connected;
   $('connection-hint').textContent = connected ? '✓ 已关联，可以收发消息' : state.error || (state.qr ? '请使用手机 WhatsApp 扫码' : state.progress || (state.status === 'connecting' ? '正在获取二维码…' : '点击下方按钮连接 WhatsApp'));
-  $('account').textContent = state.user ? `当前号码：${state.user.name || ''} ${state.user.id || ''}` : '';
+  const phone = /^[1-9]\d{6,14}$/.test(state.user?.phoneNumber || '') ? state.user.phoneNumber : /^([1-9]\d{6,14})@(s\.whatsapp\.net|c\.us)$/.exec(state.user?.id || '')?.[1] || '';
+  $('self-number').hidden = !state.user;
+  $('self-number').textContent = phone ? `我的号码：+${phone}` : state.user ? '手机号暂未解析' : '';
+  $('account').textContent = phone ? `已关联 WhatsApp 手机号：+${phone}` : state.user ? '已确认 WhatsApp 账号，手机号暂未解析，系统会自动重试。' : '';
+  const ownAccount = accounts.find(account => account.id === selectedAccount);
+  if (ownAccount) {
+    ownAccount.number = phone;
+    const option = [...$('account-select').options].find(item => item.value === selectedAccount);
+    if (option) option.textContent = `${ownAccount.label}${phone ? ` · +${phone}` : ''}${ownAccount.allowed ? '' : ' · 配额/订阅受限'}`;
+  }
   $('device-label').textContent = `平台账号：${me.username} · 号码备注：${state.account.label}`;
   $('connect').disabled = connected || state.status === 'qr' || state.authenticated;
   $('connect').textContent = state.authenticated && !connected ? '正在完成登录…' : state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';

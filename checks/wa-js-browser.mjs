@@ -114,5 +114,26 @@ try {
     assert.equal(sent.options.type, type); assert.equal(sent.options.filename, name); assert.equal(sent.options.mimetype, mime); assert.equal(sent.options.caption, '附件文案');
     assert.equal(sent.data, `data:${mime};base64,${Buffer.from('fixture').toString('base64')}`);
   }
+  const identityPage = await browser.newPage(), identities = [];
+  await identityPage.exposeFunction('__blueWaEvent', event => { identities.push(event); });
+  await identityPage.evaluate(() => {
+    window.handlers = {}; window.selfLookups = [];
+    window.WPP = { isReady: true, on: (name, callback) => { window.handlers[name] = callback; },
+      conn: { isMainReady: () => true, isOnline: () => true, isAuthenticated: () => true, getMyUserId: () => ({ _serialized: '999999999999999@lid' }) },
+      contact: { getPnLidEntry: async id => { window.selfLookups.push(id); return { phoneNumber: { _serialized: '447700900123@c.us' } }; } }
+    };
+  });
+  await identityPage.evaluate(installWaBridge);
+  await identityPage.waitForFunction(() => window.selfLookups.length > 0);
+  for (let i = 0; i < 20 && !identities.some(event => event.user?.phoneNumber === '447700900123'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(identities.some(event => event.user?.id === '999999999999999@lid' && event.user.phoneNumber === '447700900123'));
+  assert.deepEqual(await identityPage.evaluate(() => window.selfLookups), ['999999999999999@lid']);
+  await identityPage.evaluate(() => {
+    window.WPP.conn.getMyUserId = () => ({ _serialized: '888888888888888@lid' });
+    window.WPP.contact.getPnLidEntry = async () => ({}); window.handlers['conn.main_ready']();
+  });
+  for (let i = 0; i < 20 && !identities.some(event => event.user?.id === '888888888888888@lid'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(identities.find(event => event.user?.id === '888888888888888@lid').user.phoneNumber, '', 'LID digits are never displayed as a phone number');
+  await identityPage.close();
   console.log('PASS: Chromium loads pinned WA-JS 4.7.1 bundle; browser bridge handles QR/status/replies and calls text/image button APIs. WhatsApp network and recipient rendering are not simulated as delivery.');
 } finally { await browser.close(); }

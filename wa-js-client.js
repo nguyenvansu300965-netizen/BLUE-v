@@ -43,6 +43,8 @@ export function installWaBridge() {
       nativeFlowParams: native?.paramsJson, quotedId: msg.quotedStanzaID || msg.quotedMsgId?.id || msg.quotedMsgKey?.id
     };
   };
+  let selfPhone = { identity: '', number: '', attemptedAt: 0 };
+  const phoneFromId = value => /^([1-9]\d{6,14})@(c\.us|s\.whatsapp\.net)$/.exec(value || '')?.[1] || '';
   let bound = false, lastState = '', lastQr = '', lastImage = '', domQrSeen = false, authenticated = false, refreshing = false;
   const liveSince = Math.floor(Date.now() / 1000);
   const delivered = new Map();
@@ -112,7 +114,7 @@ export function installWaBridge() {
         void refresh();
       });
       wpp.on('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
-      wpp.on('conn.require_auth', () => { authenticated = false; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
+      wpp.on('conn.require_auth', () => { authenticated = false; selfPhone = { identity: '', number: '', attemptedAt: 0 }; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
       for (const event of ['conn.main_ready', 'conn.online']) wpp.on(event, () => { void refresh(); });
       wpp.on('conn.logout', () => emit({ type: 'logout' }));
       wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
@@ -124,13 +126,27 @@ export function installWaBridge() {
       const ready = wpp.conn.isMainReady();
       let identity = '';
       if (ready) for (const name of ['getMyUserId', 'getMyUserWid', 'getMyUserLid']) {
-        try { const candidate = wid(wpp.conn[name]?.()); if (/^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(candidate)) { identity = candidate; break; } } catch { /* Identity modules may load after main_ready. */ }
+        try { const candidate = wid(wpp.conn[name]?.()); if (/^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(candidate)) { if (!identity || phoneFromId(candidate)) identity = candidate; if (phoneFromId(candidate)) break; } } catch { /* Identity modules may load after main_ready. */ }
       }
       const verifiedReady = Boolean(ready && identity);
       authenticated = authenticated || verifiedReady || wpp.conn.isAuthenticated();
       const status = verifiedReady ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
-      const user = verifiedReady ? { id: identity } : null;
-      const stateKey = `${status}:${identity}:${authenticated}`;
+      let phoneNumber = phoneFromId(identity);
+      if (verifiedReady && !phoneNumber) {
+        if (selfPhone.identity !== identity) selfPhone = { identity, number: '', attemptedAt: 0 };
+        if (!selfPhone.number && Date.now() - selfPhone.attemptedAt > 10000) {
+          selfPhone.attemptedAt = Date.now(); let timer;
+          try {
+            const entry = await Promise.race([wpp.contact?.getPnLidEntry(identity), new Promise(resolve => { timer = setTimeout(() => resolve(null), 1500); })]);
+            const mapped = entry?.phoneNumber;
+            selfPhone.number = phoneFromId(wid(mapped)) || phoneFromId(mapped?.id && mapped?.server ? `${mapped.id}@${mapped.server}` : '');
+          } catch { /* Keep the verified LID and retry the phone mapping later. */ }
+          finally { clearTimeout(timer); }
+        }
+        phoneNumber = selfPhone.number;
+      }
+      const user = verifiedReady ? { id: identity, phoneNumber } : null;
+      const stateKey = `${status}:${identity}:${phoneNumber}:${authenticated}`;
       if (stateKey !== lastState) { lastState = stateKey; emit({ type: 'state', status, user, authenticated }); }
       if (!authenticated && !domQrSeen) {
         const code = await wpp.conn.getAuthCode();

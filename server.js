@@ -131,7 +131,7 @@ app.post('/api/admin/users/:id/password', async (req, res) => {
   reconcile();
   res.json({ ok: true, ...(reset ? { password } : {}) });
 });
-app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.id || '' })), user: store.publicUser(req.user) }));
+app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.phoneNumber || '' })), user: store.publicUser(req.user) }));
 app.post('/api/accounts', (req, res) => res.status(201).json({ account: store.createAccount(req.user.id, req.body?.label) }));
 app.use('/api/accounts/:id', async (req, res, next) => {
   const account = store.account(req.params.id);

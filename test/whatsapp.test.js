@@ -111,7 +111,7 @@ test('different owners have independent WhatsApp profiles, connection identities
     const [a, b] = runtimes;
     assert.notEqual(a.profileDir, b.profileDir);
     await handlers[0]({ type: 'state', status: 'connected', user: { id: '123456789@c.us' } });
-    assert.equal(a.state.user.id, '123456789@s.whatsapp.net');
+    assert.equal(a.state.user.id, '123456789@s.whatsapp.net'); assert.equal(a.state.user.phoneNumber, '123456789');
     assert.equal(b.state.status, 'connecting'); assert.equal(b.state.user, null);
     await handlers[1]({ type: 'state', status: 'connected', user: null });
     assert.equal(b.state.status, 'connecting'); assert.equal(b.state.user, null);
@@ -122,5 +122,7 @@ test('different owners have independent WhatsApp profiles, connection identities
     await handlers[0]({ type: 'message', message: { id: 'PRIVATE', chatId: '987654321@c.us', body: 'Owner one private message', timestamp: Date.now() / 1000 } });
     assert.equal(store.messages(a.account.id).length, 1); assert.deepEqual(store.messages(b.account.id), []);
     assert.equal(b.snapshot().user, null);
+    await handlers[1]({ type: 'state', status: 'connected', user: { id: '999999999999999@lid', phoneNumber: '447700900123' } });
+    assert.equal(b.state.user.phoneNumber, '447700900123'); assert.equal(a.state.user.phoneNumber, '123456789');
   } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true }); }
 });

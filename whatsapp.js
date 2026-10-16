@@ -67,7 +67,7 @@ export class WhatsAppAccount {
       if (current === this.generation && !this.state.authenticated && this.state.status !== 'connected') { clearTimeout(this.startupTimer); this.update({ status: 'qr', qr: image, error: null, progress: null }); }
     } else if (event.type === 'state') {
       if (!['connected', 'connecting', 'disconnected', 'qr'].includes(event.status)) return;
-      const user = typeof event.user?.id === 'string' && /^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(event.user.id) ? { id: toStoredJid(event.user.id) } : null;
+      const user = typeof event.user?.id === 'string' && /^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(event.user.id) ? { id: toStoredJid(event.user.id), phoneNumber: /^[1-9]\d{6,14}$/.test(event.user.phoneNumber || '') ? event.user.phoneNumber : /^([1-9]\d{6,14})@(c\.us|s\.whatsapp\.net)$/.exec(event.user.id)?.[1] || '' } : null;
       const missingIdentity = event.status === 'connected' && !user;
       if (missingIdentity) event = { ...event, status: 'connecting', authenticated: Boolean(event.authenticated) };
       if (event.authenticated && !this.state.authenticated && event.status !== 'connected') {

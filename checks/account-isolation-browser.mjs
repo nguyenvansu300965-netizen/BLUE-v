@@ -36,6 +36,9 @@ try {
     const state = await (await fetch(`/api/accounts/${id}/state`)).json(); closeStream();
     renderState({ ...state, status: 'connected', user: { id: '123456789@s.whatsapp.net' } });
   }, original.id);
+  assert.equal(await page.$eval('#self-number', element => element.textContent), '我的号码：+123456789');
+  assert.match(await page.$eval('#account-select', element => element.selectedOptions[0].textContent), /\+123456789/);
+  assert.equal(await page.$eval('#account', element => element.textContent), '已关联 WhatsApp 手机号：+123456789');
   const oldList = (await request(page, '/api/accounts')).data;
   let armed = true, staleRequest, freshRequest;
   await page.setRequestInterception(true);
@@ -63,6 +66,15 @@ try {
   assert.notEqual(await page.$eval('#connection-hint', element => element.textContent), '✓ 已关联，可以收发消息');
   assert.equal(await page.$eval('#account', element => element.textContent), '');
   assert.equal((await request(page, `/api/accounts/${created.id}/state`)).data.user, null);
+  assert.equal(await page.$eval('#self-number', element => element.hidden), true, 'switching numbers clears the former own phone');
+  await page.evaluate(async id => {
+    const state = await (await fetch(`/api/accounts/${id}/state`)).json(); closeStream();
+    renderState({ ...state, status: 'connected', user: { id: '999999999999999@lid', phoneNumber: '' } });
+  }, created.id);
+  assert.equal(await page.$eval('#self-number', element => element.textContent), '手机号暂未解析');
+  assert.ok(!(await page.$eval('#account', element => element.textContent)).includes('999999999999999'));
+  await page.evaluate(async id => { renderState(await (await fetch(`/api/accounts/${id}/state`)).json()); }, created.id);
+
   // Replayed events for another number or another owner must never replace the current state.
   await page.evaluate(({ original, created }) => {
     renderState({ account: original, status: 'connected', user: { id: 'WRONG-NUMBER' } });
