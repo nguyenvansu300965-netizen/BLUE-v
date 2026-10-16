@@ -7,10 +7,10 @@ export function imageDataUrl(image) {
 export async function sendFlow(client, jid, node, mode, image, onSent = () => {}) {
   const buttons = mode === 'buttons' ? node.options.map((o, i) => ({ id: `flow:${node.id}:${i}`, text: o.label })) : [];
   // The currently pinned WA-JS release accepts at most two buttons on media.
-  // For three choices, send the image first and a separate three-button menu.
+  // For three choices, send the image without a caption; put the text once on the button menu.
   if (image) {
     const split = buttons.length > 2;
-    const caption = split ? node.text : menuText(node, mode), imageButtons = split ? [] : buttons;
+    const caption = split ? '' : menuText(node, mode), imageButtons = split ? [] : buttons;
     const id = await client.sendImage(jid, imageDataUrl(image), caption, imageButtons);
     onSent({ id, text: caption || '[图片]', image: true, buttons: imageButtons.map(b => ({ label: b.text })) });
     if (!split) return id;

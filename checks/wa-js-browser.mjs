@@ -114,6 +114,12 @@ try {
     assert.equal(sent.options.type, type); assert.equal(sent.options.filename, name); assert.equal(sent.options.mimetype, mime); assert.equal(sent.options.caption, '附件文案');
     assert.equal(sent.data, `data:${mime};base64,${Buffer.from('fixture').toString('base64')}`);
   }
+  const languageMenu = { id: 'languages', text: 'Please select your language\n请选择您的语言\n請選擇您的語言', options: ['English', '简体中文', '繁体中文'].map((label, index) => ({ label, next: `language-${index}` })) };
+  await sendFlow(client, reply.jid, languageMenu, 'buttons', Buffer.from([255,216,255,0]));
+  const splitMenu = await page.evaluate(() => window.sent.slice(-2));
+  assert.equal(splitMenu[0].options.caption, '');
+  assert.equal(splitMenu[1].text, languageMenu.text);
+  assert.equal(splitMenu[1].options.buttons.length, 3);
   const identityPage = await browser.newPage(), identities = [];
   await identityPage.exposeFunction('__blueWaEvent', event => { identities.push(event); });
   await identityPage.evaluate(() => {

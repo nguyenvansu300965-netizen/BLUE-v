@@ -80,6 +80,9 @@ test('sends WA-JS text/image buttons, splitting three-button media and propagati
   const recorded = [];
   assert.equal(await sendFlow(client, jid, three, 'buttons', image, item => recorded.push(item)), 'text-id');
   assert.deepEqual(recorded.map(m => m.image), [true, false]);
+  assert.equal(calls[0][3], '', 'split image must not repeat the node text as its caption');
+  assert.equal(calls[1][2], three.text);
+  assert.deepEqual(recorded.map(message => message.text), ['[图片]', three.text]);
   assert.equal(recorded[0].buttons.length, 0); assert.equal(recorded[1].buttons.length, 3);
   assert.deepEqual(calls.map(c => c[0]), ['image', 'text']); assert.deepEqual(calls[0][4], []); assert.equal(calls[1][3].length, 3);
   await assert.rejects(sendFlow({ sendText: async () => { throw new Error('offline'); } }, jid, node, 'buttons'), /offline/);
@@ -162,4 +165,25 @@ test('older menu buttons work after another branch, session expiry and flow edit
   await engine.handle(event('7', '', { selection: 'flow:start:1' }));
   assert.equal(sent.at(-1), 'other', 'clients without quote IDs can use this customer’s previously sent menu');
   await engine.handle(event('7', '', { selection: 'flow:start:1' })); assert.equal(sent.length, 5, 'delivery duplicates remain ignored');
+});
+
+test('any-content entry with an image and three language buttons sends its text only once', async () => {
+  const flow = { ...config(), triggerMode: 'any', mode: 'buttons' };
+  flow.nodes[0].triggers = [];
+  flow.nodes[0].text = 'Please select your language\n请选择您的语言\n請選擇您的語言';
+  flow.nodes[0].options = ['English', '简体中文', '繁体中文'].map(label => ({ label, next: 'product' }));
+  const calls = [], client = {
+    sendImage: async (jid, image, caption, buttons) => { calls.push({ type: 'image', caption, buttons }); return 'entry-image'; },
+    sendText: async (jid, text, buttons) => { calls.push({ type: 'text', text, buttons }); return `text-${calls.length}`; }
+  };
+  const engine = new Automation(validateFlows(flow), (jid, node, mode) => sendFlow(client, jid, node, mode, node.id === 'start' ? Buffer.from([255,216,255,0]) : undefined));
+  await engine.handle(event('entry-input', '任意内容'));
+  await engine.handle(event('entry-input', '任意内容'));
+  await engine.handle(event('other-input', '其他内容'));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].caption, '');
+  assert.equal(calls[1].text, flow.nodes[0].text);
+  assert.equal(calls[1].buttons.length, 3);
+  await engine.handle(event('language-click', '', { selection: 'flow:start:2', quotedId: 'text-2' }));
+  assert.equal(calls.at(-1).text, 'Description');
 });
