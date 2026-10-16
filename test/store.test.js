@@ -19,6 +19,13 @@ test('subscription expiry blocks account creation and sends; messages stay isola
     const message = { id: '1', jid: '123456789@s.whatsapp.net', text: 'Private', time: Date.now() };
     assert.equal(store.remember(a.id, message), true); assert.equal(store.remember(a.id, message), false);
     assert.deepEqual(store.messages(b.id), []);
+    store.remember(a.id, { id: 'IMAGE', jid: message.jid, text: '/9j/' + 'A'.repeat(200), outgoing: true, time: Date.now() });
+    assert.equal(store.messages(a.id).find(m => m.id === 'IMAGE').text, '[图片]', 'legacy base64 must not be exposed as chat text');
+    assert.equal(store.remember(a.id, { id: 'IMAGE', jid: message.jid, text: '产品文案', image: 'a'.repeat(32) + '.png', buttons: [{ label: '咨询' }], outgoing: true, automatic: true, time: Date.now() }), true);
+    const media = store.messages(a.id).find(m => m.id === 'IMAGE');
+    assert.equal(media.text, '产品文案'); assert.equal(media.image, 'a'.repeat(32) + '.png'); assert.equal(media.buttons[0].label, '咨询');
+    assert.equal(store.remember(a.id, { id: 'IMAGE', jid: message.jid, text: '/9j/' + 'A'.repeat(200), outgoing: true, time: Date.now() }), false, 'later browser echo must not replace the canonical reply');
+
     runtime = await new WhatsAppAccount(a, store, dir).init();
     let ended = false;
     runtime.client = { close: async () => { ended = true; } }; runtime.state.status = 'connected';

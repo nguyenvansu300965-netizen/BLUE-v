@@ -26,10 +26,16 @@ export function installWaBridge() {
     const serialized = typeof key === 'string' ? key : key?._serialized || '';
     const fromMe = typeof key?.fromMe === 'boolean' ? key.fromMe : serialized.startsWith('true_');
     const native = msg.nativeFlowResponseMessage || msg.interactiveResponseMessage?.nativeFlowResponseMessage;
+    const buttons = [];
+    for (const button of msg.interactivePayload?.buttons || []) {
+      try { const params = JSON.parse(button.buttonParamsJson || '{}'); if (typeof params.display_text === 'string') buttons.push({ label: params.display_text }); } catch {}
+    }
+
     return {
       id: typeof key === 'string' ? key : key?.id || key?._serialized,
       chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe,
       body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
+      buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
       name: fallbackName || (typeof msg.notifyName === 'string' ? msg.notifyName : ''), timestamp: Number(msg.t || 0), type: msg.type,
       history: history || Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
       selectedId: msg.selectedId || msg.listResponse?.singleSelectReply?.selectedRowId,

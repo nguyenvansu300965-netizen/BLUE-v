@@ -20,3 +20,13 @@ test('normalizes WA-JS message keys and native button responses including histor
   assert.equal(stanzaId({ id: 'PLAIN' }), 'PLAIN');
   assert.equal(normalizeWaMessage({ ...raw, body: '', caption: 'Photo caption' }).text, 'Photo caption');
 });
+
+test('image and interactive echoes show captions/previews instead of base64 bodies', () => {
+  const base64 = '/9j/' + 'A'.repeat(200);
+  const raw = { id: 'IMAGE', chatId: '123456789@c.us', type: 'interactive', body: base64, caption: '产品介绍', timestamp: 123, hasMediaAttachment: true, buttons: [{ label: '了解更多' }] };
+  const item = normalizeWaMessage(raw);
+  assert.equal(item.text, '产品介绍'); assert.match(item.thumbnail, /^data:image\/jpeg;base64,/); assert.equal(item.buttons[0].label, '了解更多');
+  assert.equal(normalizeWaMessage({ ...raw, caption: base64 }).text, '[图片]');
+  assert.equal(normalizeWaMessage({ ...raw, body: '/9j/' + 'A'.repeat(300000) }).thumbnail, undefined);
+  assert.equal(normalizeWaMessage({ ...raw, type: 'chat', body: '正常文字', caption: '' }).text, '正常文字');
+});

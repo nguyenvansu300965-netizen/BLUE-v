@@ -25,8 +25,9 @@ export class WhatsAppAccount {
       this.requireConnected();
       const image = node.image ? await readFile(path.join(this.mediaDir, node.image)) : undefined;
       this.requireConnected();
-      const id = await sendFlow(this.client, jid, node, mode, image);
-      this.remember({ id, jid, name: jid, text: `${node.image ? '[图片] ' : ''}${menuText(node)}`, outgoing: true, time: Date.now(), automatic: true });
+      const id = await sendFlow(this.client, jid, node, mode, image, sent => {
+        this.remember({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, outgoing: true, time: Date.now(), automatic: true });
+      });
       return id;
     }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); });
     return this;

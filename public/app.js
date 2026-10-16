@@ -147,7 +147,19 @@ function renderMessages() {
     const bubble = document.createElement('div'); bubble.className = `bubble${message.outgoing ? ' outgoing' : ''}`;
     const text = document.createElement('div'); text.className = 'bubble-text'; text.textContent = message.text;
     const time = document.createElement('span'); time.className = 'bubble-time'; time.textContent = `${message.automatic ? '自动回复 · ' : ''}${new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${message.outgoing ? ' ✓' : ''}`;
-    bubble.append(text, time); area.append(bubble);
+    const imageUrl = /^[a-f0-9]{32}\.(png|jpg|webp)$/.test(message.image || '') ? `/api/accounts/${selectedAccount}/media/${message.image}` : /^data:image\/(jpeg|png|webp);base64,/.test(message.thumbnail || '') ? message.thumbnail : null;
+    if (imageUrl) {
+      const image = document.createElement('img'); image.className = 'message-image'; image.src = imageUrl; image.alt = '消息图片'; image.loading = 'lazy';
+      image.onerror = () => { image.hidden = true; };
+      bubble.append(image);
+    }
+    bubble.append(text);
+    if (message.buttons?.length) {
+      const choices = document.createElement('div'); choices.className = 'message-choices'; choices.setAttribute('aria-label', '消息中的选项');
+      for (const option of message.buttons) { const label = document.createElement('span'); label.textContent = option.label; choices.append(label); }
+      bubble.append(choices);
+    }
+    bubble.append(time); area.append(bubble);
   }
   if (nearBottom) area.scrollTop = area.scrollHeight;
 }

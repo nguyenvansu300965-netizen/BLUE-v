@@ -1,3 +1,4 @@
+import { displayMessage, isImageEncoding } from './messages.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -116,9 +117,20 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
-  messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => JSON.parse(m.payload)); }
+  messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
   remember(account, item) {
     const result = this.db.prepare('INSERT OR IGNORE INTO messages VALUES(?,?,?,?)').run(account, item.id, JSON.stringify(item), item.time);
+    if (!result.changes) {
+      const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
+      const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
+      if ((item.automatic && item.outgoing) || repair) {
+        const merged = JSON.stringify({ ...previous, ...item });
+        if (merged !== JSON.stringify(previous)) {
+          this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(merged, account, item.id);
+          return true;
+        }
+      }
+    }
     this.db.prepare('DELETE FROM messages WHERE account_id=? AND rowid NOT IN (SELECT rowid FROM messages WHERE account_id=? ORDER BY created_at DESC,rowid DESC LIMIT 500)').run(account, account);
     return result.changes > 0;
   }

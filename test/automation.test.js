@@ -76,7 +76,10 @@ test('sends WA-JS text/image buttons, splitting three-button media and propagati
   assert.equal(calls[0][0], 'image'); assert.equal(calls[0][4][0].id, 'flow:start:0');
   calls.length = 0;
   const three = { ...node, options: Array.from({ length: 3 }, (_, i) => ({ label: `Choice ${i}`, next: 'product' })) };
-  assert.equal(await sendFlow(client, jid, three, 'buttons', image), 'text-id');
+  const recorded = [];
+  assert.equal(await sendFlow(client, jid, three, 'buttons', image, item => recorded.push(item)), 'text-id');
+  assert.deepEqual(recorded.map(m => m.image), [true, false]);
+  assert.equal(recorded[0].buttons.length, 0); assert.equal(recorded[1].buttons.length, 3);
   assert.deepEqual(calls.map(c => c[0]), ['image', 'text']); assert.deepEqual(calls[0][4], []); assert.equal(calls[1][3].length, 3);
   await assert.rejects(sendFlow({ sendText: async () => { throw new Error('offline'); } }, jid, node, 'buttons'), /offline/);
 });
