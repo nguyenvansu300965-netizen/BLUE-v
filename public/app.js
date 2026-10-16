@@ -8,18 +8,28 @@ let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { stream?.close(); stream = null; }
 function showAuth() {
+  const hadIdentity = Boolean(me);
   authEpoch++; clearAttachment(); closePasswordDialog();
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
   $('account-select').replaceChildren(); $('account-select').disabled = false; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('send').disabled = true;
   $('workspace').hidden = true; $('auth-screen').hidden = false;
   $('device-dialog').close(); $('qr').hidden = true; $('qr').removeAttribute('src'); $('text').value = ''; $('messages').replaceChildren();
+  clearTimeout(noticeTimer);
+  for (const id of ['notice', 'current-user', 'subscription-badge', 'subscription-bar', 'quota', 'device-label', 'receiver-status', 'sync-status', 'admin-notice', 'admin-users', 'admin-audit']) $(id).replaceChildren();
+  $('user-avatar').textContent = 'U'; $('nav-admin').hidden = true;
+  if (hadIdentity) { $('username').value = ''; $('password').value = ''; }
+  $('chat-search').value = '';
+  $('connect').textContent = '连接 WhatsApp'; $('connect').disabled = true; $('open-device').disabled = true; $('remove-account').disabled = true; $('sync-messages').disabled = true;
+  $('flow-status').textContent = '未启用'; document.querySelector('.qr-placeholder').hidden = false; $('page-chat').classList.remove('chat-open');
+  renderChats(); renderMessages();
   window.dispatchEvent(new Event('account-changed'));
 }
 async function api(url, options = {}) {
   const epoch = authEpoch;
   const expectedUser = me?.id;
-  const response = await fetch(url, { ...options, headers: { ...(expectedUser && !url.startsWith('/api/auth/') ? { 'X-Workspace-User': expectedUser } : {}), ...(options.body && typeof options.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
+  const response = await fetch(url, { ...options, headers: { ...(expectedUser && !['/api/auth/login', '/api/auth/register', '/api/auth/me'].includes(url) ? { 'X-Workspace-User': expectedUser } : {}), ...(options.body && typeof options.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
   const result = await response.json();
+  if (epoch !== authEpoch) { const error = new Error('已忽略切换账号前的请求结果'); error.name = 'StaleResponseError'; throw error; }
   if (!response.ok) { if ((response.status === 401 || result.code === 'SESSION_CHANGED') && epoch === authEpoch && !url.includes('/auth/login')) { showAuth(); if (result.code === 'SESSION_CHANGED') $('auth-notice').textContent = result.error; } throw new Error(result.error || '请求失败'); }
   return result;
 }
@@ -192,12 +202,12 @@ $('auth-toggle').onclick = () => {
   $('password').autocomplete = registration ? 'new-password' : 'current-password'; $('auth-notice').textContent = '';
 };
 $('auth-form').onsubmit = async event => {
-  event.preventDefault(); $('auth-submit').disabled = true; $('auth-notice').textContent = '';
+  event.preventDefault(); const epoch = authEpoch; $('auth-submit').disabled = true; $('auth-notice').textContent = '';
   try {
     const result = await api(`/api/auth/${registration ? 'register' : 'login'}`, { method: 'POST', body: JSON.stringify({ username: $('username').value, password: $('password').value }) });
     if (registration) { $('auth-toggle').click(); $('auth-notice').textContent = '注册成功，请登录并联系管理员开通订阅。'; }
     else await enter(result.user);
-  } catch (error) { $('auth-notice').textContent = error.message; }
+  } catch (error) { if (epoch === authEpoch) $('auth-notice').textContent = error.message; }
   finally { $('auth-submit').disabled = false; }
 };
 $('signout').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); showAuth(); } catch (error) { notice(error.message); } };
@@ -346,4 +356,5 @@ async function loadAdmin() {
 }
 $('admin-refresh').onclick = loadAdmin;
 setInterval(() => { if (me) void refreshAccounts().catch(error => notice(error.message)); }, 15000);
-void api('/api/auth/me').then(result => enter(result.user)).catch(() => showAuth());
+const bootEpoch = authEpoch;
+void api('/api/auth/me').then(result => { if (bootEpoch === authEpoch) return enter(result.user); }).catch(() => { if (bootEpoch === authEpoch) showAuth(); });

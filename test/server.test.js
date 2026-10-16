@@ -76,6 +76,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal(mismatch.status, 409); assert.equal((await mismatch.json()).code, 'SESSION_CHANGED');
     assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/events?workspaceUser=${aliceUser.id}`)).status, 409);
     assert.equal((await alice.request('/api/accounts', { headers: { 'X-Workspace-User': aliceUser.id } })).status, 200);
+    assert.equal((await bob.request('/api/auth/logout', { method: 'POST', headers: { 'X-Workspace-User': aliceUser.id } })).status, 409);
+    assert.equal((await bob.request('/api/auth/me')).status, 200, 'old tabs must not log out a different browser identity');
     assert.equal((await (await bob.request('/api/accounts')).json()).accounts.length, 1, 'wrong browser identity must not create a number');
 
     assert.equal((await alice.request(`${base}/messages`, { method: 'POST', body: { phone: 'bad', text: 'hello' } })).status, 400);

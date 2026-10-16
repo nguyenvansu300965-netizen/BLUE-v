@@ -77,10 +77,72 @@ try {
 
   const registered = await request(page, '/api/auth/register', 'POST', { username: 'isolated-user', password: '123456' });
   await request(page, `/api/admin/users/${registered.data.user.id}`, 'PATCH', { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 86400000).toISOString() });
+  // Same-page logout/login must remove the old DOM even when the next user has no numbers.
+  await page.evaluate(async id => {
+    closeStream();
+    const state = await (await fetch(`/api/accounts/${id}/state`)).json();
+    renderState({ ...state, status: 'connected', user: { id: '123456789@s.whatsapp.net' }, messages: [{ id: 'PRIVATE-A', jid: '987654321@s.whatsapp.net', name: 'Private contact A', text: 'Private preview A', outgoing: false, time: Date.now() }] });
+  }, created.id);
+  await page.click('.chat-item');
+  assert.equal(await page.$eval('#chat-name', element => element.textContent), 'Private contact A');
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  async function signInHere(username) {
+    await page.$eval('#username', (element, value) => { element.value = value; }, username);
+    await page.$eval('#password', element => { element.value = '123456'; });
+    await page.click('#auth-submit');
+    await page.waitForFunction(name => !document.getElementById('workspace').hidden && document.getElementById('current-user').textContent === name, {}, username);
+  }
+  await signInHere('isolated-user');
+  await page.waitForFunction(() => document.getElementById('account-select').textContent.includes('尚未添加号码'));
+  assert.equal(await page.$$eval('.chat-item', elements => elements.length), 0, 'new user without numbers must not inherit the previous chat list');
+  assert.equal(await page.$eval('#chat-name', element => element.textContent), 'BLUE-v 网页工作台');
+  assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private preview A'));
+  assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private contact A'));
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  await signInHere('isolation-admin');
+  await page.waitForFunction(() => document.getElementById('account-select').value.length > 0);
+  // Repeat switching with a number already owned by B, without reloading the document.
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  await signInHere('isolated-user');
+  const ownedB = (await request(page, '/api/accounts', 'POST', { label: 'B own number' })).data.account;
+  await page.evaluate(() => refreshAccounts());
+  await page.waitForFunction(id => document.getElementById('account-select').value === id, {}, ownedB.id);
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  await signInHere('isolation-admin');
+  await page.waitForFunction(() => document.getElementById('account-select').value.length > 0);
+  await page.evaluate(async () => {
+    closeStream();
+    const state = await (await fetch(`${flowBase()}/state`)).json();
+    renderState({ ...state, status: 'connected', user: { id: '123456789@s.whatsapp.net' }, messages: [{ id: 'PRIVATE-A-2', jid: '987654321@s.whatsapp.net', name: 'Private contact A', text: 'Private preview A', outgoing: false, time: Date.now() }] });
+  });
+  await page.click('.chat-item');
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  await signInHere('isolated-user');
+  await page.waitForFunction(id => document.getElementById('account-select').value === id, {}, ownedB.id);
+  assert.equal(await page.$$eval('.chat-item', elements => elements.length), 0);
+  assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private contact A'));
+  assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private preview A'));
+  assert.equal((await request(page, `/api/accounts/${ownedB.id}`, 'DELETE')).status, 200);
+  await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  await signInHere('isolation-admin');
+  await page.waitForFunction(() => document.getElementById('account-select').value.length > 0);
   // A second tab shares the browser's cookie jar: the first tab must not act as this newly logged-in user.
-  const tab = await browser.newPage(); await tab.goto(base);
-  assert.equal((await request(tab, '/api/auth/login', 'POST', { username: 'isolated-user', password: '123456' })).status, 200);
-  await tab.reload(); await tab.waitForFunction(() => document.getElementById('current-user').textContent === 'isolated-user');
+  const tab = await browser.newPage(); let oldBoot;
+  await tab.setRequestInterception(true);
+  tab.on('request', req => {
+    if (!oldBoot && new URL(req.url()).pathname === '/api/auth/me') oldBoot = req;
+    else void req.continue();
+  });
+  await tab.goto(base);
+  for (let i = 0; !oldBoot && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(oldBoot);
+  await tab.type('#username', 'isolated-user'); await tab.type('#password', '123456'); await tab.click('#auth-submit');
+  await tab.waitForFunction(() => document.getElementById('current-user').textContent === 'isolated-user');
+  await tab.waitForFunction(() => document.getElementById('account-select').textContent.includes('尚未添加号码'));
+  await oldBoot.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ user: admin }) });
+  await tab.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+  assert.equal(await tab.$eval('#current-user', element => element.textContent), 'isolated-user', 'late startup identity must not restore the former user');
+  assert.equal(await tab.$eval('#workspace', element => element.hidden), false);
   await page.bringToFront();
   page.once('dialog', dialog => dialog.accept('Must not be created for the other user'));
   await page.click('#add-account');
@@ -94,7 +156,7 @@ try {
   assert.equal(state.status, 'idle'); assert.equal(state.user, null); assert.equal(state.account.user_id, registered.data.user.id);
   assert.notEqual(state.account.user_id, admin.id);
   assert.deepEqual(errors, []);
-  console.log('PASS: delayed list responses cannot reselect an old connected number; mismatched state is ignored; shared-cookie account switches block old-tab actions; other owners cannot read the connection.');
+  console.log('PASS: delayed list responses cannot reselect an old connected number; mismatched state is ignored; shared-cookie account switches block old-tab actions; other owners cannot read the connection; same-page account switches clear old chat DOM.');
 } finally {
   await browser?.close();
   if (service.exitCode === null) { const exited = once(service, 'exit'); service.kill('SIGTERM'); await exited; }
