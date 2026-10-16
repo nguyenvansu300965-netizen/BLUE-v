@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeWaMessage, toStoredJid } from './messages.js';
-import { Automation, loadFlows, menuText } from './automation.js';
+import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
 import { WaJsClient } from './wa-js-client.js';
@@ -21,8 +21,13 @@ export class WhatsAppAccount {
   }
   async init() {
     this.config = await loadFlows(this.flowFile);
-    this.automation = new Automation(this.config, async (jid, node, mode) => {
+    this.automation = new Automation(this.config, async (jid, node, mode, contact) => {
       this.requireConnected();
+      if (/\{(?:full_name|phone_number)\}/.test(node.text)) {
+        let profile = {};
+        try { profile = await this.client.contactInfo?.(jid) || {}; } catch { /* Use message profile and verified phone JID when unavailable. */ }
+        node = { ...node, text: renderReplyText(node.text, jid, { ...contact, ...profile, name: profile.name || contact?.name, phoneNumber: profile.phoneNumber || contact?.phoneNumber }) };
+      }
       const image = node.image ? await readFile(path.join(this.mediaDir, node.image)) : undefined;
       this.requireConnected();
       const id = await sendFlow(this.client, jid, node, mode, image, sent => {

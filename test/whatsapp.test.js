@@ -24,8 +24,9 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     await events[0]({ type: 'qr', code: 'test-only-qr' }); assert.match(a.state.qr, /^data:image\/png;base64,/); assert.equal(b.state.qr, null);
     await events[0]({ type: 'state', status: 'connected', user: { id: '123456789@c.us' } });
     await access(a.sessionMarker);
-    a.config = { enabled: true, mode: 'buttons', nodes: [{ id: 'start', name: 'Welcome', triggers: ['hi'], text: 'Choose', image: '', options: [{ label: 'Next', next: 'next' }] }, { id: 'next', name: 'Next', triggers: [], text: 'Done', image: '', options: [] }] };
+    a.config = { enabled: true, mode: 'buttons', nodes: [{ id: 'start', name: 'Welcome', triggers: ['hi'], text: 'Dear user {full_name}, hello! {phone_number}', image: '', options: [{ label: 'Next', next: 'next' }] }, { id: 'next', name: 'Next', triggers: [], text: 'Done', image: '', options: [] }] };
     a.automation.configure(a.config);
+    a.client.contactInfo = async () => ({ name: 'Rose', phoneNumber: '123456789' });
     a.client.fetchMessages = async () => ({ messages: [{ id: 'HISTORY', chatId: '123456789@c.us', body: 'hi', timestamp: Date.now() / 1000 }], chatCount: 1, failedChats: 0 });
     await a.syncMessages(); await a.automation.queue;
     assert.equal(store.messages(a.account.id).some(m => m.id === 'HISTORY'), true);
@@ -33,6 +34,9 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     await a.syncMessages(); assert.equal(a.sync.imported, 0);
     const incoming = { type: 'message', message: { id: 'INCOMING', chatId: '123456789@c.us', body: 'hi', timestamp: Date.now() / 1000 } };
     await events[0](incoming); await a.automation.queue;
+    assert.equal(calls.find(c => c[0] === 'text')[2], 'Dear user Rose, hello! 123456789');
+    assert.equal(store.messages(a.account.id).find(m => m.id === 'OUTGOING').text, 'Dear user Rose, hello! 123456789');
+    assert.equal(a.config.nodes[0].text, 'Dear user {full_name}, hello! {phone_number}');
     assert.equal(calls.filter(c => c[0] === 'text').length, 1); assert.deepEqual(calls.find(c => c[0] === 'text')[3], [{ id: 'flow:start:0', text: 'Next' }]);
     await events[0](incoming); await a.automation.queue; assert.equal(calls.filter(c => c[0] === 'text').length, 1);
     await events[0]({ type: 'message', message: { id: 'DECRYPT', chatId: '123456789@c.us', type: 'ciphertext', timestamp: Date.now() / 1000 } });

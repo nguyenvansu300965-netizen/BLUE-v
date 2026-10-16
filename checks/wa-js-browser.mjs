@@ -80,6 +80,10 @@ try {
   assert.ok(live.some(e => e.message.id === 'MISSED_EVENT'), 'store sweep must recover a missed event in a new conversation');
   assert.ok(!live.some(e => e.message.id === 'OLD_HISTORY'), 'old history must not trigger live reception');
   const client = new WaJsClient({ profileDir: '/unused', onEvent() {} }); client.page = page;
+  await page.evaluate(() => { window.WPP.contact = { getPnLidEntry: async to => ({ phoneNumber: { _serialized: '447700900123@c.us' }, contact: { pushname: 'Rose', name: 'Saved name' } }) }; });
+  assert.deepEqual(await client.contactInfo('999999999999999@lid'), { name: 'Rose', phoneNumber: '447700900123' });
+  await page.evaluate(() => { window.WPP.contact.getPnLidEntry = async () => { throw new Error('Unavailable'); }; });
+  assert.deepEqual(await client.contactInfo('999999999999999@lid'), {});
   const node = { id: 'welcome', text: '请选择', options: [{ label: '产品介绍', next: 'products' }] };
   assert.equal(await sendFlow(client, reply.jid, node, 'buttons'), 'TEXT');
   assert.equal(await sendFlow(client, reply.jid, node, 'buttons', Buffer.from([255,216,255,0])), 'IMAGE');

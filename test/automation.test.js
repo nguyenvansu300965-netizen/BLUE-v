@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Automation, validateFlows, loadFlows, saveFlows } from '../automation.js';
+import { Automation, renderReplyText, validateFlows, loadFlows, saveFlows } from '../automation.js';
 import { normalizeWaMessage } from '../messages.js';
 import { sendFlow } from '../flow-sender.js';
 const config = () => ({ enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [
@@ -123,4 +123,21 @@ test('single-entry validation rejects branch triggers and migrates legacy files 
     const { readFile } = await import('node:fs/promises');
     assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).nodes[1].triggers, ['other']);
   } finally { await rm(dir, { recursive: true }); }
+});
+
+test('reply variables use recipient identity without mutating templates or confusing LIDs with phones', async () => {
+  const text = 'Dear user {full_name}, hello! {phone_number} / {full_name} {unknown}';
+  assert.equal(renderReplyText(text, '8613800138000@s.whatsapp.net', { name: 'Rose $&' }), 'Dear user Rose $&, hello! 8613800138000 / Rose $& {unknown}');
+  assert.equal(renderReplyText('{full_name} {phone_number}', '999999999999999@lid', { name: 'Rose', phoneNumber: '447700900123' }), 'Rose 447700900123');
+  assert.equal(renderReplyText('{full_name} {phone_number}', '999999999999999@lid'), '客户 未知号码');
+  assert.equal(renderReplyText('{full_name}', '123456789@s.whatsapp.net', { name: '123456789@s.whatsapp.net' }), '123456789');
+  assert.equal(renderReplyText('{full_name}', '123456789@s.whatsapp.net', { name: '{phone_number}' }), '{phone_number}');
+  const flow = config(), received = [];
+  flow.nodes[0].text = text; flow.nodes[1].text = '{full_name}';
+  const engine = new Automation(flow, async (jid, node, mode, contact) => { received.push(renderReplyText(node.text, jid, contact)); return 'prompt'; });
+  await engine.handle(event('a', 'hi', { name: 'Alice' }));
+  await engine.handle(event('b', 'hi', { jid: '987654321@s.whatsapp.net', name: 'Bob' }));
+  await engine.handle(event('c', '1'));
+  assert.match(received[0], /Alice.*123456789/); assert.match(received[1], /Bob.*987654321/); assert.equal(received[2], 'Alice');
+  assert.equal(flow.nodes[0].text, text);
 });

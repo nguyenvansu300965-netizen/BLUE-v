@@ -55,6 +55,13 @@ export function menuText(node, mode = 'numbered') {
   if (mode === 'buttons') return node.text || (node.options.length ? '请选择下方选项' : '');
   return [node.text, node.options.length ? node.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') + '\n回复序号或选项文字继续' : ''].filter(Boolean).join('\n\n');
 }
+// Replace only supported placeholders once; profile text is never interpreted as a template.
+export function renderReplyText(text, jid, contact = {}) {
+  const phone = /^[1-9]\d{6,14}$/.test(contact.phoneNumber || '') ? contact.phoneNumber : /^([1-9]\d{6,14})@(s\.whatsapp\.net|c\.us)$/.exec(jid)?.[1] || '';
+  const name = typeof contact.name === 'string' && contact.name.trim() && !/^[0-9]+@(?:s\.whatsapp\.net|c\.us|lid)$/.test(contact.name) ? contact.name.trim().slice(0, 200) : phone || '客户';
+  const values = { full_name: name, phone_number: phone || '未知号码' };
+  return text.replace(/\{(full_name|phone_number)\}/g, (_, key) => values[key]);
+}
 export class Automation {
   constructor(config, send, report = () => {}) { this.config = config; this.send = send; this.report = report; this.sessions = new Map(); this.seen = new Set(); this.queue = Promise.resolve(); }
   configure(config) { this.config = config; this.sessions.clear(); }
@@ -63,7 +70,7 @@ export class Automation {
     this.queue = run.catch(() => {});
     return run;
   }
-  async process({ id, jid, fromMe, text, selection, quotedId, time = Date.now() }) {
+  async process({ id, jid, fromMe, text, selection, quotedId, name, phoneNumber, time = Date.now() }) {
     if (!this.config.enabled || fromMe || !id || !/^[0-9]+@(s\.whatsapp\.net|lid)$/.test(jid || '') || Date.now() - time > 120000 || this.seen.has(`${jid}:${id}`)) return;
     this.seen.add(`${jid}:${id}`);
     if (this.seen.size > 5000) this.seen.delete(this.seen.values().next().value);
@@ -91,9 +98,10 @@ export class Automation {
     }
     if (!node) return;
     try {
-      const messageId = await this.send(jid, node, this.config.mode);
+      const contact = { name: name && name !== jid ? name : session?.contact?.name, phoneNumber: phoneNumber || session?.contact?.phoneNumber };
+      const messageId = await this.send(jid, node, this.config.mode, contact);
       if (this.sessions.size >= 10000) this.sessions.delete(this.sessions.keys().next().value);
-      this.sessions.set(jid, { node: node.id, messageId, expires: Date.now() + 30 * 60000 });
+      this.sessions.set(jid, { node: node.id, messageId, contact, expires: Date.now() + 30 * 60000 });
       this.report({ ok: true, node: node.name });
     } catch (error) { this.report({ ok: false, node: node.name }); throw error; }
   }

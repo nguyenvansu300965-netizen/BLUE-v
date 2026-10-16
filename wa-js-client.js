@@ -210,6 +210,20 @@ export class WaJsClient {
       return { messages, chatCount: chats.length, failedChats };
     });
   }
+  async contactInfo(jid) {
+    return this.page.evaluate(async to => {
+      let timer;
+      try {
+        const entry = await Promise.race([
+          window.WPP.contact.getPnLidEntry(to),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Contact lookup timeout')), 3000); })
+        ]);
+        const phone = entry?.phoneNumber?._serialized || '';
+        return { name: String(entry?.contact?.pushname || entry?.contact?.name || entry?.contact?.verifiedName || '').slice(0, 200), phoneNumber: /^([1-9]\d{6,14})@c\.us$/.exec(phone)?.[1] || '' };
+      } catch { return {}; }
+      finally { clearTimeout(timer); }
+    }, toWaJid(jid));
+  }
   async sendText(jid, text, buttons = []) {
     const result = await this.page.evaluate(async ({ to, text, buttons }) => {
       const result = await window.WPP.chat.sendTextMessage(to, text, { buttons: buttons.length ? buttons : undefined, detectMentioned: false, markIsRead: false, waitForAck: true });

@@ -34,6 +34,8 @@
         const hint = document.createElement('p'); hint.className = 'muted'; hint.textContent = '通过前面节点的按钮进入此回复，不设置触发词。'; card.append(hint);
       }
       card.append(field('回复文案', input(node.text, v => { node.text = v; }, true)));
+      const variables = document.createElement('p'); variables.className = 'muted';
+      variables.textContent = '可用变量：{full_name} 对方 WhatsApp 名称，{phone_number} 含国家区号的手机号。例如：Dear user {full_name}, hello! {phone_number}。支持文字和图片文案。名称不可用时显示号码；号码无法识别时显示“未知号码”。'; card.append(variables);
 
       const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `${base}/media/${node.image}`;
       const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
