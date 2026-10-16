@@ -2,11 +2,12 @@ const $ = id => document.getElementById(id);
 const planNames = { basic: '基础套餐', pro: '高级套餐', vip: 'VIP 套餐' };
 const statusNames = { idle: '未连接', connecting: '连接中', qr: '等待扫码', connected: '已连接', disconnected: '重连中', logged_out: '已退出', blocked: '权限受限', error: '连接失败' };
 let me = null, accounts = [], selectedAccount = '', selectedThread = '', draftPhone = '', messages = [], stream = null, registration = false, sending = false, connected = false;
+let attachmentDraft = null, passwordTarget = null;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { stream?.close(); stream = null; }
 function showAuth() {
-  authEpoch++;
+  authEpoch++; clearAttachment(); closePasswordDialog();
   closeStream(); me = null; accounts = []; selectedAccount = ''; messages = [];
   $('workspace').hidden = true; $('auth-screen').hidden = false;
   $('device-dialog').close(); $('qr').hidden = true; $('qr').removeAttribute('src'); $('text').value = ''; $('messages').replaceChildren();
@@ -65,7 +66,7 @@ async function enter(user) {
   await refreshAccounts();
 }
 function switchAccount() {
-  closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
+  clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = accounts.find(a => a.id === selectedAccount)?.label || ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
   $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
@@ -125,7 +126,7 @@ function renderChats() {
     const time = document.createElement('time'); time.textContent = new Date(thread.last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const preview = document.createElement('span'); preview.className = 'chat-preview'; preview.textContent = `${thread.last.outgoing ? '你：' : ''}${thread.last.text}`;
     top.append(name, time); copy.append(top, preview); button.append(avatar, copy);
-    button.onclick = () => { selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); renderChats(); renderMessages(); };
+    button.onclick = () => { if (selectedThread !== thread.jid) clearAttachment(); selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); renderChats(); renderMessages(); };
     $('chat-list').append(button);
   }
 }
@@ -153,6 +154,16 @@ function renderMessages() {
       const image = document.createElement('img'); image.className = 'message-image'; image.src = imageUrl; image.alt = '消息图片'; image.loading = 'lazy';
       image.onerror = () => { image.hidden = true; };
       bubble.append(image);
+    }
+    if (/^[a-f0-9]{32}$/.test(message.attachment?.id || '')) {
+      const item = message.attachment, url = `/api/accounts/${selectedAccount}/attachments/${item.id}`;
+      if (['image', 'video', 'audio'].includes(item.type)) {
+        const media = document.createElement(item.type === 'image' ? 'img' : item.type);
+        media.className = item.type === 'image' ? 'message-image' : 'message-media'; media.src = url;
+        if (item.type === 'image') { media.alt = item.name; media.loading = 'lazy'; } else { media.controls = true; media.preload = 'metadata'; }
+        bubble.append(media);
+      }
+      const link = document.createElement('a'); link.href = `${url}?download=1`; link.textContent = `下载 ${item.name}`; link.className = 'message-download'; bubble.append(link);
     }
     bubble.append(text);
     if (message.buttons?.length) {
@@ -212,22 +223,64 @@ $('new-chat').onclick = () => {
   if (!selectedAccount) return notice('请先添加并选择一个号码');
   const raw = prompt('输入收件人手机号，包含国家区号'); if (!raw) return;
   const phone = raw.replace(/[\s()+-]/g, ''); if (!/^[1-9]\d{6,14}$/.test(phone)) return notice('请输入含国家区号的有效手机号');
-  draftPhone = phone; selectedThread = `${phone}@s.whatsapp.net`; $('page-chat').classList.add('chat-open'); renderChats(); renderMessages(); $('text').focus();
+  clearAttachment(); draftPhone = phone; selectedThread = `${phone}@s.whatsapp.net`; $('page-chat').classList.add('chat-open'); renderChats(); renderMessages(); $('text').focus();
 };
 $('chat-search').oninput = renderChats;
 $('chat-name').parentElement.parentElement.onclick = () => $('page-chat').classList.remove('chat-open');
 $('text').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send').disabled) $('send-form').requestSubmit(); } };
-$('send-form').onsubmit = async event => {
-  event.preventDefault(); if (sending || !selectedAccount || !selectedThread) return;
-  const id = selectedAccount, jid = selectedThread, text = $('text').value;
-  const existing = messages.some(m => m.jid === jid);
-  sending = true; $('send').disabled = true;
-  try {
-    await api(`/api/accounts/${id}/messages`, { method: 'POST', body: JSON.stringify({ text, ...(existing ? { jid } : { phone: draftPhone }) }) });
-    if (id === selectedAccount && jid === selectedThread) $('text').value = '';
-  } catch (error) { notice(error.message); }
-  finally { sending = false; $('send').disabled = !connected || !selectedThread; }
+function clearAttachment() {
+  attachmentDraft = null; $('chat-file').value = ''; $('attachment-draft').hidden = true; $('attachment-draft').textContent = ''; $('clear-attachment').hidden = true;
+}
+$('attach-file').onclick = () => {
+  if (!connected || !selectedThread || sending) return notice('请先连接号码并选择聊天');
+  $('chat-file').click();
 };
+$('clear-attachment').onclick = () => { if (!sending) clearAttachment(); };
+$('chat-file').onchange = () => {
+  const file = $('chat-file').files[0]; if (!file) return;
+  if (!file.size || file.size > 20 * 1024 * 1024) { $('chat-file').value = ''; return notice('请选择非空文件，最大 20MB'); }
+  attachmentDraft = { file, uploaded: null }; $('attachment-draft').textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)}MB`;
+  $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
+};
+$('send-form').onsubmit = async event => {
+  event.preventDefault(); if (sending || !connected || !selectedAccount || !selectedThread) return;
+  const id = selectedAccount, jid = selectedThread, text = $('text').value, draft = attachmentDraft, epoch = authEpoch;
+  if (!text.trim() && !draft) return notice('请输入消息或选择附件');
+  const existing = messages.some(m => m.jid === jid), phone = draftPhone;
+  sending = true; $('send').disabled = true; $('attach-file').disabled = true; $('clear-attachment').disabled = true;
+  try {
+    if (draft && !draft.uploaded) {
+      const query = new URLSearchParams({ name: draft.file.name, mime: draft.file.type || 'application/octet-stream' });
+      const result = await api(`/api/accounts/${id}/attachments?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: draft.file });
+      draft.uploaded = result.attachment;
+    }
+    if (epoch !== authEpoch) return;
+    await api(`/api/accounts/${id}/messages`, { method: 'POST', body: JSON.stringify({ text, ...(draft ? { attachment: draft.uploaded.id } : {}), ...(existing ? { jid } : { phone }) }) });
+    if (epoch === authEpoch && id === selectedAccount && jid === selectedThread) { if ($('text').value === text) $('text').value = ''; if (draft === attachmentDraft) clearAttachment(); }
+  } catch (error) { if (epoch === authEpoch) notice(error.message); }
+  finally { sending = false; $('send').disabled = !connected || !selectedThread; $('attach-file').disabled = false; $('clear-attachment').disabled = false; }
+};
+function closePasswordDialog() {
+  passwordTarget = null; $('admin-password').value = ''; $('password-result').value = ''; $('password-result-label').hidden = true; $('password-notice').textContent = ''; $('password-dialog').close();
+}
+$('password-close').onclick = closePasswordDialog;
+$('password-dialog').addEventListener('cancel', event => { event.preventDefault(); closePasswordDialog(); });
+async function changeUserPassword(reset) {
+  if (!passwordTarget) return;
+  if (reset && !confirm('生成随机密码并使该用户退出登录？')) return;
+  const target = passwordTarget, epoch = authEpoch;
+  $('password-save').disabled = true; $('password-reset').disabled = true; $('password-result').value = ''; $('password-result-label').hidden = true;
+  try {
+    const result = await api(`/api/admin/users/${target}/password`, { method: 'POST', body: JSON.stringify(reset ? { reset: true } : { password: $('admin-password').value }) });
+    if (epoch !== authEpoch || target !== passwordTarget) return;
+    $('admin-password').value = ''; $('password-notice').textContent = '密码已更新，用户需要重新登录';
+    if (reset) { $('password-result').value = result.password; $('password-result-label').hidden = false; }
+    await loadAdmin();
+  } catch (error) { if (epoch === authEpoch && target === passwordTarget) $('password-notice').textContent = error.message; }
+  finally { $('password-save').disabled = false; $('password-reset').disabled = false; }
+}
+$('password-form').onsubmit = event => { event.preventDefault(); void changeUserPassword(false); };
+$('password-reset').onclick = () => { void changeUserPassword(true); };
 $('nav-chat').onclick = () => showPage('chat');
 $('nav-flows').onclick = () => { if (!selectedAccount) return notice('请先选择可用号码，再配置自动回复'); showPage('flows'); };
 $('nav-admin').onclick = () => showPage('admin');
@@ -243,6 +296,11 @@ async function loadAdmin() {
       const strong = document.createElement('strong'); strong.textContent = user.username;
       const info = document.createElement('small'); info.textContent = `${user.role === 'admin' ? '超级管理员' : user.active ? '订阅有效' : '待开通 / 已停用 / 已到期'} · ${user.accountCount} 个号码`;
       name.append(strong, info); form.append(name);
+      if (user.id !== me.id) {
+        const passwordButton = document.createElement('button'); passwordButton.type = 'button'; passwordButton.className = 'outline'; passwordButton.textContent = '修改 / 重置密码';
+        passwordButton.onclick = () => { closePasswordDialog(); passwordTarget = user.id; $('password-title').textContent = `修改密码 · ${user.username}`; $('password-dialog').showModal(); $('admin-password').focus(); };
+        form.append(passwordButton);
+      }
       if (user.role === 'admin') { $('admin-users').append(form); continue; }
       const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = user.enabled;
       const enabledLabel = document.createElement('label'); enabledLabel.className = 'checkbox'; enabledLabel.append(enabled, document.createTextNode('开通权限'));
@@ -265,6 +323,7 @@ async function loadAdmin() {
     }
     $('admin-audit').replaceChildren(...result.audit.map(entry => {
       const div = document.createElement('div'); div.className = 'audit-entry';
+      if (entry.action === 'password_change' || entry.action === 'password_reset') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${entry.action === 'password_reset' ? '随机重置密码' : '修改密码'}`; return div; }
       const detail = JSON.parse(entry.detail); div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${planNames[detail.plan]} · ${detail.enabled ? '开通 / 更新' : '停用'}${detail.expiresAt ? ` · 到期 ${new Date(detail.expiresAt).toLocaleString()}` : ''}`; return div;
     }));
   } catch (error) { $('admin-notice').textContent = error.message; }

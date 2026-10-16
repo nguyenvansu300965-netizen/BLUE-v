@@ -1,6 +1,6 @@
 import express from 'express';
 import { defaultTemplates } from './flow-templates.js';
-import { mkdir, rm, writeFile, access, copyFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile, access, copyFile, readFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,7 +57,7 @@ function rate(key, max, duration) {
 app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('Referrer-Policy', 'same-origin');
-  res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   next();
 });
 app.get('/healthz', (req, res) => res.json({ ok: true }));
@@ -117,6 +117,15 @@ app.delete('/api/admin/templates/:templateId', (req, res) => {
   store.db.prepare('DELETE FROM flow_templates WHERE id=?').run(req.params.templateId);
   res.json({ ok: true });
 });
+app.post('/api/admin/users/:id/password', async (req, res) => {
+  rate(`password-admin:${req.user.id}`, 60, 900000);
+  const reset = req.body?.reset === true;
+  if (reset && req.body.password !== undefined) throw new AppError(400, '请选择修改密码或随机重置');
+  const password = reset ? randomBytes(18).toString('base64url') : req.body?.password;
+  await store.changePassword(req.user.id, req.params.id, password, reset);
+  reconcile();
+  res.json({ ok: true, ...(reset ? { password } : {}) });
+});
 app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.id || '' })), user: store.publicUser(req.user) }));
 app.post('/api/accounts', (req, res) => res.status(201).json({ account: store.createAccount(req.user.id, req.body?.label) }));
 app.use('/api/accounts/:id', async (req, res, next) => {
@@ -152,17 +161,48 @@ accountRouter.post('/connect', async (req, res) => {
 });
 accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.post('/messages', async (req, res) => {
-  const { text, phone, jid: selectedJid } = req.body || {};
-  if (typeof text !== 'string' || !text.trim() || text.length > 4096) throw new AppError(400, '消息需要 1–4096 个字符');
+  const { text = '', phone, jid: selectedJid, attachment: attachmentId } = req.body || {};
+  const attachment = attachmentId ? store.attachment(req.account.id, attachmentId) : null;
+  if (attachmentId && !attachment) throw new AppError(400, '附件不存在，请重新选择');
+  if (typeof text !== 'string' || (!text.trim() && !attachment) || text.length > 4096) throw new AppError(400, '请输入消息或选择附件，文案最多 4096 字');
   let jid;
   if (selectedJid) {
     if (typeof selectedJid !== 'string' || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(selectedJid) || !store.messages(req.account.id).some(m => m.jid === selectedJid)) throw new AppError(400, '请选择当前号码下的会话');
     jid = selectedJid;
   } else { try { jid = recipientJid(phone); } catch (error) { throw new AppError(400, error.message); } }
   req.runtime.requireConnected();
-  const id = await req.runtime.sendText(jid, text.trim());
-  req.runtime.remember({ id, jid, name: jid, text: text.trim(), outgoing: true, time: Date.now() });
+  const id = attachment ? await req.runtime.sendMedia(jid, attachment, text.trim()) : await req.runtime.sendText(jid, text.trim());
+  req.runtime.remember({ id, jid, name: jid, text: text.trim() || `[${attachment?.name || '附件'}]`, ...(attachment ? { attachment } : {}), manual: true, outgoing: true, time: Date.now() });
   res.json({ ok: true, id });
+});
+const mediaTypes = {
+  'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'image/gif': 'image',
+  'video/mp4': 'video', 'video/webm': 'video',
+  'audio/mpeg': 'audio', 'audio/ogg': 'audio', 'audio/wav': 'audio', 'audio/mp4': 'audio', 'audio/webm': 'audio',
+  'application/pdf': 'document', 'text/plain': 'document', 'application/zip': 'document', 'application/octet-stream': 'document',
+  'application/msword': 'document', 'application/vnd.ms-excel': 'document', 'application/vnd.ms-powerpoint': 'document',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'document'
+};
+accountRouter.post('/attachments', express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
+  const mime = req.query.mime, name = req.query.name;
+  if (typeof mime !== 'string' || !Object.hasOwn(mediaTypes, mime) || typeof name !== 'string' || !name.trim() || name.length > 200) throw new AppError(400, '文件类型或名称无效');
+  if (!Buffer.isBuffer(req.body) || !req.body.length) throw new AppError(400, '请选择非空附件（最大 20MB）');
+  const item = { id: randomBytes(16).toString('hex'), name: name.replace(/[\x00-\x1f\x7f/\\]/g, '_'), mime, type: mediaTypes[mime], size: req.body.length };
+  await mkdir(req.runtime.mediaDir, { recursive: true, mode: 0o700 });
+  const file = path.join(req.runtime.mediaDir, `${item.id}.bin`);
+  await writeFile(file, req.body, { mode: 0o600 });
+  try { store.addAttachment(req.account.id, item); } catch (error) { await rm(file, { force: true }); throw error; }
+  res.json({ attachment: item });
+});
+accountRouter.get('/attachments/:asset', (req, res) => {
+  if (!/^[a-f0-9]{32}$/.test(req.params.asset)) throw new AppError(404, '附件不存在');
+  const item = store.attachment(req.account.id, req.params.asset);
+  if (!item) throw new AppError(404, '附件不存在');
+  res.type(item.mime);
+  if (item.type === 'document' || req.query.download === '1') res.attachment(item.name);
+  res.sendFile(path.join(req.runtime.mediaDir, `${item.id}.bin`));
 });
 accountRouter.post('/media', express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '5mb' }), async (req, res) => {
   const data = req.body;

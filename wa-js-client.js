@@ -232,6 +232,14 @@ export class WaJsClient {
     if (!result?.id) throw new Error('WA-JS returned no message ID');
     return stanzaId(result.id);
   }
+  async sendMedia(jid, data, attachment, caption) {
+    const result = await this.page.evaluate(async ({ to, dataUrl, type, filename, mime, caption }) => {
+      const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type, filename, mimetype: mime, caption, markIsRead: false, waitForAck: true });
+      return { id: result.id };
+    }, { to: toWaJid(jid), dataUrl: `data:${attachment.mime};base64,${data.toString('base64')}`, type: attachment.type, filename: attachment.name, mime: attachment.mime, caption });
+    if (!result?.id) throw new Error('WA-JS returned no message ID');
+    return stanzaId(result.id);
+  }
   async sendImage(jid, dataUrl, caption, buttons = []) {
     const result = await this.page.evaluate(async ({ to, dataUrl, caption, buttons }) => {
       const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type: 'image', caption, buttons: buttons.length ? buttons : undefined, detectMentioned: false, markIsRead: false, waitForAck: true });

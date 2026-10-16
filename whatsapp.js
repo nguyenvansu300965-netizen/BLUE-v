@@ -178,6 +178,12 @@ export class WhatsAppAccount {
     })().finally(() => { this.syncing = null; });
     return this.syncing;
   }
+  async sendMedia(jid, attachment, caption) {
+    this.requireConnected();
+    const data = await readFile(path.join(this.mediaDir, `${attachment.id}.bin`));
+    this.requireConnected();
+    return this.client.sendMedia(jid, data, attachment, caption);
+  }
   async sendText(jid, text) {
     this.requireConnected();
     return this.client.sendText(jid, text);

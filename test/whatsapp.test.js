@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdtemp, rm, access, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Store } from '../store.js';
@@ -44,6 +44,11 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     assert.equal(store.messages(a.account.id).find(m => m.id === 'DECRYPT').text, 'Decrypted content');
     assert.ok(a.receiver.lastMessageAt);
     assert.equal(store.messages(b.account.id).length, 0);
+    await mkdir(a.mediaDir, { recursive: true });
+    const attachment = { id: 'a'.repeat(32), name: '报价.pdf', mime: 'application/pdf', type: 'document', size: 3 };
+    await writeFile(path.join(a.mediaDir, `${attachment.id}.bin`), Buffer.from('pdf'));
+    a.client.sendMedia = async (jid, data, item, caption) => { assert.equal(jid, '123456789@s.whatsapp.net'); assert.equal(data.toString(), 'pdf'); assert.deepEqual(item, attachment); assert.equal(caption, '报价'); return 'MEDIA'; };
+    assert.equal(await a.sendMedia('123456789@s.whatsapp.net', attachment, '报价'), 'MEDIA');
     await a.reset();
     assert.equal(a.client, null); assert.equal(a.state.status, 'idle');
     await assert.rejects(access(a.sessionMarker));

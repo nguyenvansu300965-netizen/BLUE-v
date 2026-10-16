@@ -158,3 +158,58 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.ok(adminData.audit.length >= 4); assert.ok(!JSON.stringify(adminData).includes('password_hash'));
   } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
 });
+
+test('six-character passwords, admin password changes/reset and isolated media uploads', { timeout: 30000 }, async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'blue-password-media-'));
+  let service = await launch(dataDir);
+  try {
+    const anonymous = client(service.base), admin = client(service.base), user = client(service.base), other = client(service.base);
+    assert.equal((await anonymous.request('/api/auth/register', { method: 'POST', body: { username: 'short-pass', password: '12345' } })).status, 400);
+    const registered = await anonymous.request('/api/auth/register', { method: 'POST', body: { username: 'six-pass', password: '123456' } });
+    assert.equal(registered.status, 201); const uid = (await registered.json()).user.id;
+    await admin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: '123456' } })).status, 200);
+    await admin.request(`/api/admin/users/${uid}`, { method: 'PATCH', body: grant('basic') });
+    const account = (await (await user.request('/api/accounts', { method: 'POST', body: { label: 'Media' } })).json()).account;
+    const base = `/api/accounts/${account.id}`;
+    const file = Buffer.from('%PDF-1.4\ntest attachment');
+    const uploaded = await user.request(`${base}/attachments?${new URLSearchParams({ mime: 'application/pdf', name: '报价单.pdf' })}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    assert.equal(uploaded.status, 200); const item = (await uploaded.json()).attachment;
+    assert.equal(item.type, 'document'); assert.equal(item.size, file.length);
+    const download = await user.request(`${base}/attachments/${item.id}`);
+    assert.equal(download.status, 200); assert.match(download.headers.get('content-disposition'), /attachment/);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), file);
+    assert.equal((await anonymous.request(`${base}/attachments/${item.id}`)).status, 401);
+    assert.equal((await user.request(`${base}/attachments?mime=text/html&name=page.html`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })).status, 400);
+    assert.equal((await user.request(`${base}/attachments?mime=application/pdf&name=large.pdf`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(20 * 1024 * 1024 + 1) })).status, 413);
+    assert.equal((await user.request(`${base}/messages`, { method: 'POST', body: { phone: '123456789', attachment: item.id } })).status, 409, 'valid file-only send still requires a WhatsApp connection');
+    assert.equal((await user.request(`${base}/messages`, { method: 'POST', body: { phone: '123456789', attachment: 'missing' } })).status, 400);
+    assert.equal((await user.request(`/api/admin/users/${uid}/password`, { method: 'POST', body: { password: 'abcdef' } })).status, 403);
+    assert.equal((await admin.request(`/api/admin/users/${uid}/password`, { method: 'POST', body: { password: '12345' } })).status, 400);
+    assert.equal((await user.request('/api/auth/me')).status, 200, 'invalid password must not revoke login');
+    const controller = new AbortController();
+    const stream = await user.request(`${base}/events`, { signal: controller.signal }); const reader = stream.body.getReader(); await reader.read();
+    assert.equal((await admin.request(`/api/admin/users/${uid}/password`, { method: 'POST', body: { password: 'abcdef' } })).status, 200);
+    assert.match(new TextDecoder().decode((await reader.read()).value), /revoked/); controller.abort();
+    assert.equal((await user.request('/api/auth/me')).status, 401);
+    assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: '123456' } })).status, 401);
+    assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: 'abcdef' } })).status, 200);
+    const reset = await admin.request(`/api/admin/users/${uid}/password`, { method: 'POST', body: { reset: true } });
+    assert.equal(reset.status, 200); const generated = (await reset.json()).password; assert.ok(generated.length >= 20);
+    assert.equal((await user.request('/api/auth/me')).status, 401);
+    assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: generated } })).status, 200);
+    const audit = await (await admin.request('/api/admin/users')).json();
+    assert.ok(audit.audit.some(e => e.action === 'password_change')); assert.ok(audit.audit.some(e => e.action === 'password_reset'));
+    assert.ok(!JSON.stringify(audit).includes(generated)); assert.ok(!JSON.stringify(audit).includes('abcdef'));
+    const otherUser = (await (await anonymous.request('/api/auth/register', { method: 'POST', body: { username: 'media-other', password: '654321' } })).json()).user;
+    await admin.request(`/api/admin/users/${otherUser.id}`, { method: 'PATCH', body: grant('basic') });
+    await other.request('/api/auth/login', { method: 'POST', body: { username: 'media-other', password: '654321' } });
+    const otherAccount = (await (await other.request('/api/accounts', { method: 'POST', body: { label: 'Other' } })).json()).account;
+    assert.equal((await other.request(`${base}/attachments/${item.id}`)).status, 404);
+    assert.equal((await other.request(`/api/accounts/${otherAccount.id}/messages`, { method: 'POST', body: { phone: '123456789', attachment: item.id } })).status, 400);
+    await service.stop(); service = await launch(dataDir);
+    const restored = client(service.base);
+    assert.equal((await restored.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: generated } })).status, 200);
+    assert.deepEqual(Buffer.from(await (await restored.request(`${base}/attachments/${item.id}`)).arrayBuffer()), file);
+  } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
+});

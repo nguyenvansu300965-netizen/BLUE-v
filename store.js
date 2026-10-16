@@ -11,7 +11,7 @@ export class AppError extends Error { constructor(status, message) { super(messa
 const fail = (status, message) => { throw new AppError(status, message); };
 const tokenHash = token => createHash('sha256').update(token).digest('hex');
 export async function passwordHash(password) {
-  if (typeof password !== 'string' || password.length < 12 || password.length > 128) fail(400, '密码需要 12–128 个字符');
+  if (typeof password !== 'string' || password.length < 6 || password.length > 128) fail(400, '密码需要 6–128 个字符');
   const salt = randomBytes(16).toString('hex');
   const key = await scrypt(password, salt, 64);
   return `${salt}:${key.toString('hex')}`;
@@ -38,6 +38,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS account_owner ON accounts(user_id, created_at, id);
       CREATE TABLE IF NOT EXISTS messages (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(account_id,id));
+      CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS flow_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
     `);
@@ -60,7 +61,7 @@ export class Store {
   }
   async bootstrap(username, password) {
     if (this.db.prepare("SELECT id FROM users WHERE role='admin'").get()) return;
-    if (!username || !password) throw new Error('First startup requires ADMIN_USER and ADMIN_PASSWORD (12+ characters)');
+    if (!username || !password) throw new Error('First startup requires ADMIN_USER and ADMIN_PASSWORD (6+ characters)');
     await this.createUser(username, password, 'admin');
   }
   async login(username, password) {
@@ -95,6 +96,20 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.publicUser(this.user(id));
   }
+  async changePassword(actor, id, password, reset = false) {
+    if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可修改密码');
+    if (!this.user(id)) fail(404, '用户不存在');
+    const hash = await passwordHash(password);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, id);
+      this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+      this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, id, reset ? 'password_reset' : 'password_change', '{}', Date.now());
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  attachment(account, id) { return typeof id === 'string' ? this.db.prepare('SELECT id,name,mime,type,size FROM attachments WHERE account_id=? AND id=?').get(account, id) : undefined; }
+  addAttachment(account, item) { this.db.prepare('INSERT INTO attachments VALUES(?,?,?,?,?,?)').run(item.id, account, item.name, item.mime, item.type, item.size); }
   accounts(userId) { return this.db.prepare('SELECT * FROM accounts WHERE user_id=? ORDER BY created_at,id').all(userId); }
   account(id) { return this.db.prepare('SELECT * FROM accounts WHERE id=?').get(id); }
   allowed(account) {
@@ -124,7 +139,7 @@ export class Store {
     if (!result.changes) {
       const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
       const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
-      if ((item.automatic && item.outgoing) || repair) {
+      if (((item.automatic || item.manual) && item.outgoing) || repair) {
         const merged = JSON.stringify({ ...previous, ...item });
         if (merged !== JSON.stringify(previous)) {
           this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(merged, account, item.id);

@@ -98,5 +98,11 @@ try {
   assert.equal(calls[0].to, '123456789@c.us'); assert.deepEqual(calls[0].options.buttons, [{ id: 'flow:welcome:0', text: '产品介绍' }]);
   assert.equal(calls[0].options.waitForAck, true); assert.equal(calls[0].options.detectMentioned, false);
   assert.equal(calls[1].options.type, 'image'); assert.match(calls[1].data, /^data:image\/jpeg;base64,/); assert.equal(calls[1].options.buttons.length, 1);
+  for (const [type, mime, name] of [['image', 'image/png', '图片.png'], ['video', 'video/mp4', 'video.mp4'], ['audio', 'audio/mpeg', 'audio.mp3'], ['document', 'application/pdf', '报价单.pdf']]) {
+    assert.equal(await client.sendMedia(reply.jid, Buffer.from('fixture'), { type, mime, name }, '附件文案'), 'IMAGE');
+    const sent = await page.evaluate(() => window.sent.at(-1));
+    assert.equal(sent.options.type, type); assert.equal(sent.options.filename, name); assert.equal(sent.options.mimetype, mime); assert.equal(sent.options.caption, '附件文案');
+    assert.equal(sent.data, `data:${mime};base64,${Buffer.from('fixture').toString('base64')}`);
+  }
   console.log('PASS: Chromium loads pinned WA-JS 4.7.1 bundle; browser bridge handles QR/status/replies and calls text/image button APIs. WhatsApp network and recipient rendering are not simulated as delivery.');
 } finally { await browser.close(); }

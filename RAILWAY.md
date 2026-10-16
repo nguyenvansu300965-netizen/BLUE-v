@@ -15,7 +15,7 @@
 | 变量 | 设置 |
 | --- | --- |
 | `ADMIN_USER` | 首次启动创建的超级管理员用户名，例如 `admin`；4–64 位字母、数字、点、横线或 @ |
-| `ADMIN_PASSWORD` | 首次启动的管理员密码，至少 12 位，使用长随机密码 |
+| `ADMIN_PASSWORD` | 首次启动的管理员密码，至少 6 位，使用长随机密码 |
 | `PUBLIC_ORIGIN` | 必填，完整 HTTPS 域名，例如 `https://blue-v-production.up.railway.app`，勿填路径 |
 | `HOST` | `0.0.0.0`，Dockerfile 已设置 |
 | `NODE_ENV` | `production`，Dockerfile 已设置，登录 Cookie 要求 HTTPS |
