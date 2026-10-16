@@ -1,6 +1,6 @@
 (() => {
   const el = id => document.getElementById(id);
-  let config = { enabled: false, mode: 'numbered', nodes: [] };
+  let config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [] };
   let busy = false;
   let base = null;
   let loadVersion = 0;
@@ -16,12 +16,25 @@
     el('flow-nodes').replaceChildren(...config.nodes.map((node, index) => {
       const card = document.createElement('div'); card.className = 'flow-node';
       const head = document.createElement('div'); head.className = 'section-title';
-      const title = document.createElement('strong'); title.textContent = `节点 ${index + 1}`;
+      const title = document.createElement('strong'); title.textContent = index === 0 ? '入口节点 · 流程起点' : `回复节点 ${index} · 由按钮进入`;
       head.append(title, button('删除节点', () => {
         if (config.nodes.some(n => n.options.some(o => o.next === node.id))) return status('请先移除其他节点指向此节点的选项');
         config.nodes.splice(index, 1); draw();
       }));
-      card.append(head, field('节点名称', input(node.name, v => { node.name = v; })), field('触发词（以逗号分隔；分支节点可留空）', input(node.triggers.join(', '), v => { node.triggers = v.split(/[,，]/).map(t => t.trim()).filter(Boolean); })), field('回复文案', input(node.text, v => { node.text = v; }, true)));
+      card.append(head, field('节点名称', input(node.name, v => { node.name = v; })));
+      if (index === 0) {
+        const triggerMode = document.createElement('select'); triggerMode.id = 'flow-trigger-mode';
+        for (const [value, text] of [['keywords', '关键词触发'], ['any', '任意内容触发']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; triggerMode.append(option); }
+        triggerMode.value = config.triggerMode || 'keywords'; triggerMode.onchange = () => { config.triggerMode = triggerMode.value; draw(); };
+        card.append(field('入口触发方式', triggerMode));
+        if (config.triggerMode !== 'any') card.append(field('入口触发词（逗号分隔）', input(node.triggers.join(', '), v => { node.triggers = v.split(/[,，]/).map(t => t.trim()).filter(Boolean); })));
+        const hint = document.createElement('p'); hint.className = 'muted'; hint.textContent = '客户没有进行中的流程时，按此方式进入；原生按钮模式只接受点击，兼容模式可回复序号或选项文字。'; card.append(hint);
+      } else {
+        node.triggers = [];
+        const hint = document.createElement('p'); hint.className = 'muted'; hint.textContent = '通过前面节点的按钮进入此回复，不设置触发词。'; card.append(hint);
+      }
+      card.append(field('回复文案', input(node.text, v => { node.text = v; }, true)));
+
       const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `${base}/media/${node.image}`;
       const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
       file.onchange = async () => {
@@ -58,7 +71,7 @@
   el('flow-add').onclick = () => { if (config.nodes.length >= 50) return status('最多 50 个节点'); config.nodes.push(newNode()); draw(); };
   el('flow-example').onclick = () => {
     if (config.nodes.length && !confirm('示例将替换当前编辑内容，是否继续？')) return;
-    config = { enabled: false, mode: 'numbered', nodes: [
+    config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [
       { id: 'welcome', name: '欢迎菜单', triggers: ['你好', '菜单', 'hi'], text: '欢迎咨询！请选择你感兴趣的内容：', image: '', options: [{ label: '产品介绍', next: 'products' }, { label: '联系顾问', next: 'contact' }] },
       { id: 'products', name: '产品介绍', triggers: [], text: '这里填写产品介绍，可上传产品图片。', image: '', options: [{ label: '联系顾问', next: 'contact' }, { label: '返回菜单', next: 'welcome' }] },
       { id: 'contact', name: '联系顾问', triggers: [], text: '请留下您的需求，我们将尽快回复。', image: '', options: [{ label: '返回菜单', next: 'welcome' }] }
@@ -78,7 +91,7 @@
   async function load() {
     const version = ++loadVersion;
     base = window.flowBase();
-    config = { enabled: false, mode: 'numbered', nodes: [] };
+    config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [] };
     el('flow-nodes').replaceChildren();
     el('flow-notice').textContent = '';
     for (const id of ['flow-save', 'flow-add', 'flow-example', 'flow-enabled', 'flow-mode']) el(id).disabled = !base;

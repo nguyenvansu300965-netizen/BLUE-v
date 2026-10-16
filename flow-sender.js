@@ -10,12 +10,12 @@ export async function sendFlow(client, jid, node, mode, image, onSent = () => {}
   // For three choices, send the image first and a separate three-button menu.
   if (image) {
     const split = buttons.length > 2;
-    const caption = split ? node.text : menuText(node), imageButtons = split ? [] : buttons;
+    const caption = split ? node.text : menuText(node, mode), imageButtons = split ? [] : buttons;
     const id = await client.sendImage(jid, imageDataUrl(image), caption, imageButtons);
     onSent({ id, text: caption || '[图片]', image: true, buttons: imageButtons.map(b => ({ label: b.text })) });
     if (!split) return id;
   }
-  const text = menuText(node), id = await client.sendText(jid, text, buttons);
+  const text = menuText(node, mode), id = await client.sendText(jid, text, buttons);
   onSent({ id, text, image: false, buttons: buttons.map(b => ({ label: b.text })) });
   return id;
 }

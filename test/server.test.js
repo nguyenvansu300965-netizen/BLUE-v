@@ -80,7 +80,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await alice.request(`${base}/media/${asset}`)).status, 200);
     assert.equal((await bob.request(`${base}/media/${asset}`)).status, 404);
     assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/media/${asset}`)).status, 404);
-    const flow = { enabled: true, mode: 'numbered', nodes: [{ id: 'hi', name: 'Welcome', text: 'Hello', triggers: ['hi'], image: asset, options: [] }] };
+    const flow = { enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [{ id: 'hi', name: 'Welcome', text: 'Hello', triggers: ['hi'], image: asset, options: [] }] };
     assert.equal((await alice.request(`${base}/flows`, { method: 'POST', body: flow })).status, 200);
     assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/flows`, { method: 'POST', body: flow })).status, 400);
     for (const [plan, limit] of [['pro', 5], ['vip', 10]]) {

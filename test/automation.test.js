@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Automation, validateFlows, loadFlows, saveFlows } from '../automation.js';
 import { normalizeWaMessage } from '../messages.js';
 import { sendFlow } from '../flow-sender.js';
-const config = () => ({ enabled: true, mode: 'numbered', nodes: [
+const config = () => ({ enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [
   { id: 'start', name: 'Welcome', triggers: ['Hi'], text: 'Choose', image: '', options: [{ label: 'Product', next: 'product' }] },
   { id: 'product', name: 'Product', triggers: [], text: 'Description', image: '', options: [] }
 ] });
@@ -33,8 +33,9 @@ test('buttons require active context, expired sessions and stale messages do not
   await engine.handle(event('4', '', { selection: 'flow:start:0', quotedId: 'prompt' }));
   assert.deepEqual(sent, ['start', 'product']);
   await engine.handle(event('5', 'hi'));
+  assert.equal(sent.length, 2, 'entry keywords must not restart an active branch');
   engine.sessions.get('123456789@s.whatsapp.net').expires = 0;
-  await engine.handle(event('6', '1'));
+  await engine.handle(event('6', 'hi'));
   await engine.handle(event('7', 'hi', { time: Date.now() - 180000 }));
   assert.equal(sent.length, 3);
 });
@@ -82,4 +83,44 @@ test('sends WA-JS text/image buttons, splitting three-button media and propagati
   assert.equal(recorded[0].buttons.length, 0); assert.equal(recorded[1].buttons.length, 3);
   assert.deepEqual(calls.map(c => c[0]), ['image', 'text']); assert.deepEqual(calls[0][4], []); assert.equal(calls[1][3].length, 3);
   await assert.rejects(sendFlow({ sendText: async () => { throw new Error('offline'); } }, jid, node, 'buttons'), /offline/);
+});
+
+test('any-content trigger starts only the entry and never resets an active branch', async () => {
+  const flow = { ...config(), triggerMode: 'any' }; flow.nodes[0].triggers = [];
+  const sent = [];
+  const engine = new Automation(validateFlows(flow), async (jid, node) => { sent.push(node.id); return 'prompt'; });
+  await engine.handle(event('1', '任意问候'));
+  await engine.handle(event('2', '无关文字'));
+  assert.deepEqual(sent, ['start']);
+  await engine.handle(event('3', 'Product'));
+  await engine.handle(event('4', '另一句话'));
+  assert.deepEqual(sent, ['start', 'product']);
+  engine.sessions.get('123456789@s.whatsapp.net').expires = 0;
+  await engine.handle(event('5', '[图片]'));
+  assert.deepEqual(sent, ['start', 'product', 'start']);
+});
+test('native-button branches cannot be entered by typed labels, numbers or entry keywords', async () => {
+  const flow = { ...config(), mode: 'buttons' }, sent = [];
+  const engine = new Automation(validateFlows(flow), async (jid, node) => { sent.push(node.id); return 'prompt'; });
+  await engine.handle(event('1', 'Product')); assert.deepEqual(sent, []);
+  await engine.handle(event('2', 'Hi'));
+  for (const [index, text] of ['Product', '1', 'Hi'].entries()) await engine.handle(event(`text-${index}`, text));
+  assert.deepEqual(sent, ['start']);
+  await engine.handle(event('3', '', { selection: 'flow:start:0', quotedId: 'prompt' }));
+  assert.deepEqual(sent, ['start', 'product']);
+});
+test('single-entry validation rejects branch triggers and migrates legacy files without rewriting them', async () => {
+  const branch = config(); branch.nodes[1].triggers = ['other'];
+  assert.throws(() => validateFlows(branch), /只有第一个/);
+  const missing = config(); missing.nodes[0].triggers = [];
+  assert.throws(() => validateFlows(missing), /入口节点/);
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-entry-'));
+  try {
+    const file = path.join(dir, 'legacy.json'); const legacy = { ...branch }; delete legacy.triggerMode;
+    await saveFlows(file, legacy);
+    const loaded = await loadFlows(file);
+    assert.deepEqual(loaded.nodes[1].triggers, []); assert.deepEqual(loaded.nodes[0].triggers, ['Hi']);
+    const { readFile } = await import('node:fs/promises');
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).nodes[1].triggers, ['other']);
+  } finally { await rm(dir, { recursive: true }); }
 });
