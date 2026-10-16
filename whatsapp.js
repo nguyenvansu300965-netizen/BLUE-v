@@ -31,10 +31,10 @@ export class WhatsAppAccount {
       const image = node.image ? await readFile(path.join(this.mediaDir, node.image)) : undefined;
       this.requireConnected();
       const id = await sendFlow(this.client, jid, node, mode, image, sent => {
-        this.remember({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, outgoing: true, time: Date.now(), automatic: true });
+        this.remember({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, ...(sent.buttons.length ? { flow: { nodeId: node.id, options: structuredClone(node.options) } } : {}), outgoing: true, time: Date.now(), automatic: true });
       });
       return id;
-    }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); });
+    }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); }, ({ jid, quotedId, nodeId }) => this.store.flowMenu(this.account.id, jid, nodeId, quotedId, this.config.nodes));
     return this;
   }
   requireConnected() {

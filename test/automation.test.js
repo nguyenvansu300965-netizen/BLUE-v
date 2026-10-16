@@ -24,7 +24,7 @@ test('matches trigger, tracks each customer, branches by number, ignores own/gro
   engine.configure({ ...config(), enabled: false });
   await engine.handle(event('6', 'hi')); assert.equal(sent.length, 2);
 });
-test('buttons require active context, expired sessions and stale messages do not advance', async () => {
+test('buttons require a previously sent menu; unrelated quotes and stale reply events do not advance', async () => {
   const sent = [];
   const engine = new Automation(config(), async (jid, node) => { sent.push(node.id); return 'prompt'; });
   await engine.handle(event('1', '', { selection: 'flow:start:0' }));
@@ -140,4 +140,26 @@ test('reply variables use recipient identity without mutating templates or confu
   await engine.handle(event('c', '1'));
   assert.match(received[0], /Alice.*123456789/); assert.match(received[1], /Bob.*987654321/); assert.equal(received[2], 'Alice');
   assert.equal(flow.nodes[0].text, text);
+});
+
+test('older menu buttons work after another branch, session expiry and flow edits without mixing customers', async () => {
+  const flow = { ...config(), mode: 'buttons' };
+  flow.nodes.push({ id: 'other', name: 'Other', text: 'Other reply', triggers: [], image: '', options: [] });
+  flow.nodes[0].options.push({ label: 'Other', next: 'other' });
+  const sent = [], engine = new Automation(flow, async (jid, node) => { sent.push(node.id); return `menu-${sent.length}`; });
+  await engine.handle(event('1', 'hi'));
+  await engine.handle(event('2', '', { selection: 'flow:start:0', quotedId: 'menu-1' }));
+  assert.deepEqual(sent, ['start', 'product']);
+  await engine.handle(event('3', '', { selection: 'flow:start:1', quotedId: 'menu-1' }));
+  assert.deepEqual(sent, ['start', 'product', 'other']);
+  engine.sessions.get('123456789@s.whatsapp.net').expires = 0;
+  flow.nodes[0].options[0].next = 'other';
+  await engine.handle(event('4', '', { selection: 'flow:start:0', quotedId: 'menu-1' }));
+  assert.equal(sent.at(-1), 'product', 'route using the original sent option, not a reordered current menu');
+  await engine.handle(event('5', '', { selection: 'flow:start:1', quotedId: 'menu-1', jid: '987654321@s.whatsapp.net' }));
+  await engine.handle(event('6', '', { selection: 'flow:start:1', quotedId: 'foreign-message' }));
+  assert.equal(sent.length, 4);
+  await engine.handle(event('7', '', { selection: 'flow:start:1' }));
+  assert.equal(sent.at(-1), 'other', 'clients without quote IDs can use this customer’s previously sent menu');
+  await engine.handle(event('7', '', { selection: 'flow:start:1' })); assert.equal(sent.length, 5, 'delivery duplicates remain ignored');
 });

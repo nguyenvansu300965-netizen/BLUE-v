@@ -15,7 +15,7 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     const user = store.byName('test-admin');
     const createClient = ({ profileDir, onEvent }) => {
       events.push(onEvent); calls.push(['profile', profileDir]);
-      return { start: async () => {}, close: async () => { calls.push(['close', profileDir]); }, logout: async () => {}, sendText: async (jid, text, buttons) => { calls.push(['text', jid, text, buttons]); return 'OUTGOING'; } };
+      return { start: async () => {}, close: async () => { calls.push(['close', profileDir]); }, logout: async () => {}, sendText: async (jid, text, buttons) => { calls.push(['text', jid, text, buttons]); return calls.filter(call => call[0] === 'text').length === 1 ? 'OUTGOING' : `OUTGOING-${calls.filter(call => call[0] === 'text').length}`; } };
     };
     const a = await new WhatsAppAccount(store.createAccount(user.id, 'One'), store, dir, { createClient }).init();
     const b = await new WhatsAppAccount(store.createAccount(user.id, 'Two'), store, dir, { createClient }).init(); runtimes.push(a, b);
@@ -42,6 +42,12 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     await events[0]({ type: 'message', message: { id: 'DECRYPT', chatId: '123456789@c.us', type: 'ciphertext', timestamp: Date.now() / 1000 } });
     await events[0]({ type: 'message', message: { id: 'DECRYPT', chatId: '123456789@c.us', type: 'chat', body: 'Decrypted content', timestamp: Date.now() / 1000 } });
     assert.equal(store.messages(a.account.id).find(m => m.id === 'DECRYPT').text, 'Decrypted content');
+    assert.deepEqual(store.messages(a.account.id).find(m => m.id === 'OUTGOING').flow, { nodeId: 'start', options: [{ label: 'Next', next: 'next' }] });
+    a.automation.configure(a.config); // Drops all in-memory sessions/menus, as after a restart.
+    await events[0]({ type: 'message', message: { id: 'OLD-BUTTON-CLICK', chatId: '123456789@c.us', type: 'buttons_response', selectedButtonId: 'flow:start:0', quotedId: 'OUTGOING', timestamp: Date.now() / 1000 } });
+    await a.automation.queue;
+    assert.equal(calls.filter(call => call[0] === 'text').length, 2);
+    assert.equal(calls.filter(call => call[0] === 'text').at(-1)[2], 'Done', 'persisted original menu must route an old button with no active session');
     assert.ok(a.receiver.lastMessageAt);
     assert.equal(store.messages(b.account.id).length, 0);
     await mkdir(a.mediaDir, { recursive: true });

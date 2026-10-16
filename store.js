@@ -134,6 +134,16 @@ export class Store {
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
   messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  flowMenu(account, jid, nodeId, quotedId, nodes) {
+    const current = nodes.find(node => node.id === nodeId);
+    for (const message of this.messages(account).reverse()) {
+      if (message.jid !== jid || !message.outgoing || !message.automatic || !message.buttons?.length || (quotedId && message.id !== quotedId)) continue;
+      if (message.flow?.nodeId === nodeId) return message.flow;
+      // Before menu snapshots were recorded, only reuse a menu whose complete labels still match.
+      if (!message.flow && current && message.buttons.length === current.options.length && message.buttons.every((button, index) => button.label === current.options[index].label)) return { nodeId, options: current.options };
+    }
+    return null;
+  }
   remember(account, item) {
     const result = this.db.prepare('INSERT OR IGNORE INTO messages VALUES(?,?,?,?)').run(account, item.id, JSON.stringify(item), item.time);
     if (!result.changes) {

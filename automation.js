@@ -63,8 +63,8 @@ export function renderReplyText(text, jid, contact = {}) {
   return text.replace(/\{(full_name|phone_number)\}/g, (_, key) => values[key]);
 }
 export class Automation {
-  constructor(config, send, report = () => {}) { this.config = config; this.send = send; this.report = report; this.sessions = new Map(); this.seen = new Set(); this.queue = Promise.resolve(); }
-  configure(config) { this.config = config; this.sessions.clear(); }
+  constructor(config, send, report = () => {}, resolveMenu = () => null) { this.resolveMenu = resolveMenu; this.menus = new Map(); this.config = config; this.send = send; this.report = report; this.sessions = new Map(); this.seen = new Set(); this.queue = Promise.resolve(); }
+  configure(config) { this.config = config; this.sessions.clear(); this.menus.clear(); }
   handle(event) {
     const run = this.queue.then(() => this.process(event));
     this.queue = run.catch(() => {});
@@ -79,11 +79,14 @@ export class Automation {
     if (!session) this.sessions.delete(jid);
     let node;
     if (selection) {
-      if (!session || session.expires < Date.now()) return;
       const match = /^flow:([^:]+):(\d+)$/.exec(selection);
-      if (!match || match[1] !== session.node || (quotedId && quotedId !== session.messageId)) return;
-      const prior = this.config.nodes.find(n => n.id === session.node);
-      node = this.config.nodes.find(n => n.id === prior?.options[Number(match[2])]?.next);
+      if (!match || Number(match[2]) > 2) return;
+      const nodeId = match[1], index = Number(match[2]);
+      // A click refers to its original sent menu, even after the conversation moved on.
+      const memory = quotedId ? this.menus.get(JSON.stringify([jid, quotedId])) : [...this.menus.values()].reverse().find(menu => menu.jid === jid && menu.nodeId === nodeId);
+      const prior = memory || await this.resolveMenu({ jid, quotedId, nodeId, index });
+      if (!prior || prior.nodeId !== nodeId) return;
+      node = this.config.nodes.find(n => n.id === prior.options[index]?.next);
     } else {
       const input = norm(text || '');
       if (session && session.expires > Date.now() && this.config.mode === 'numbered') {
@@ -100,6 +103,10 @@ export class Automation {
     try {
       const contact = { name: name && name !== jid ? name : session?.contact?.name, phoneNumber: phoneNumber || session?.contact?.phoneNumber };
       const messageId = await this.send(jid, node, this.config.mode, contact);
+      if (node.options.length && typeof messageId === 'string') {
+        if (this.menus.size >= 10000) this.menus.delete(this.menus.keys().next().value);
+        this.menus.set(JSON.stringify([jid, messageId]), { jid, nodeId: node.id, options: structuredClone(node.options) });
+      }
       if (this.sessions.size >= 10000) this.sessions.delete(this.sessions.keys().next().value);
       this.sessions.set(jid, { node: node.id, messageId, contact, expires: Date.now() + 30 * 60000 });
       this.report({ ok: true, node: node.name });
