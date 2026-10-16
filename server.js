@@ -112,6 +112,7 @@ accountRouter.delete('/', async (req, res) => {
   store.deleteAccount(req.account.id); runtimes.delete(req.account.id);
   reconcile(); res.json({ ok: true });
 });
+accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
 accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot()));
 accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });

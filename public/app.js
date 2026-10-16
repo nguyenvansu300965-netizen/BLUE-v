@@ -67,18 +67,22 @@ function switchAccount() {
   closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = accounts.find(a => a.id === selectedAccount)?.label || ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
-  $('send').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
+  $('send').disabled = true; $('sync-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
   window.dispatchEvent(new Event('account-changed'));
   if (!selectedAccount) return;
   const id = selectedAccount;
   stream = new EventSource(`/api/accounts/${id}/events`);
   stream.onmessage = event => { if (id === selectedAccount) renderState(JSON.parse(event.data)); };
   stream.addEventListener('revoked', () => { if (id !== selectedAccount) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
-  stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('status').textContent = '工作台重连中'; } };
+  stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
 }
 function renderState(state) {
   connectionStatus = state.status;
   connected = state.status === 'connected'; messages = state.messages;
+  $('sync-status').textContent = state.sync?.status === 'syncing' ? '正在导入最近会话…' : state.sync?.error || (state.sync?.updatedAt ? `最近同步新增 ${state.sync.imported} 条` : '');
+  $('sync-messages').disabled = !connected || state.sync?.status === 'syncing';
+  $('sync-messages').textContent = state.sync?.status === 'syncing' ? '同步中…' : '同步消息';
+  $('sync-messages').title = state.sync?.error || (state.sync?.updatedAt ? `最近同步 ${new Date(state.sync.updatedAt).toLocaleString()}` : '读取当前号码在 WhatsApp Web 中可用的最近消息');
   $('status').textContent = statusNames[state.status] || state.status; $('status').classList.toggle('online', connected);
   $('send').disabled = !connected || !selectedThread || sending;
   $('qr').hidden = !state.qr; if (state.qr) $('qr').src = state.qr;
@@ -181,6 +185,7 @@ $('remove-account').onclick = async () => {
   if (!confirm(`删除「${account.label}」以及其本地会话、消息、图片和流程？`)) return;
   try { await api(`/api/accounts/${account.id}`, { method: 'DELETE' }); if (selectedAccount === account.id) selectedAccount = ''; await refreshAccounts(); notice('号码已删除；如需撤销手机端关联，请在 WhatsApp 已关联设备中移除。'); } catch (error) { notice(error.message); }
 };
+$('sync-messages').onclick = async () => { try { const result = await api(accountPath('/sync'), { method: 'POST' }); notice(result.sync.error || '已开始同步，完成后会话列表会自动更新。'); } catch (error) { notice(error.message); } };
 $('open-device').onclick = () => { if (selectedAccount) $('device-dialog').showModal(); };
 $('close-device').onclick = () => $('device-dialog').close();
 $('connect').onclick = async () => { try { await api(accountPath('/connect'), { method: 'POST', body: JSON.stringify({ restart: connectionStatus === 'connecting' }) }); } catch (error) { notice(error.message); } };

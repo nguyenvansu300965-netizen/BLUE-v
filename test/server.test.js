@@ -63,6 +63,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     const base = `/api/accounts/${account.id}`;
     const bobAccount = (await (await bob.request('/api/accounts', { method: 'POST', body: { label: 'Bob' } })).json()).account;
     assert.equal((await bob.request(`${base}/state`)).status, 404);
+    assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
+    assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
     assert.equal((await bob.request(`${base}/connect`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
     assert.equal((await bob.request(base, { method: 'DELETE' })).status, 404);

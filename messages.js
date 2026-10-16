@@ -16,13 +16,13 @@ export function stanzaId(value) {
 export function normalizeWaMessage(raw) {
   if (!raw || typeof raw.chatId !== 'string') return null;
   const id = stanzaId(raw.id), jid = toStoredJid(raw.chatId);
-  if (!id || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid) || raw.history) return null;
+  if (!id || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid)) return null;
   let params = {};
   if (raw.type === 'native_flow_response') {
-    try { params = JSON.parse(raw.nativeFlowParams || raw.body || '{}'); } catch { /* Some clients expose the selection as a plain field. */ }
+    try { const parsed = JSON.parse(raw.nativeFlowParams || raw.body || '{}'); if (parsed && typeof parsed === 'object') params = parsed; } catch { /* Some clients expose the selection as a plain field. */ }
   }
   const selection = raw.selectedButtonId || raw.selectedId || params.id;
   const text = raw.label || params.display_text || (params.id ? '[选项回复]' : raw.body) || raw.caption || (selection ? '[选项回复]' : '[非文本消息]');
-  return { id, jid, name: String(raw.name || jid).slice(0, 200), text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), time: Number(raw.timestamp || 0) * 1000,
+  return { id, jid, name: String(raw.name || jid).slice(0, 200), text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), history: Boolean(raw.history), time: Number(raw.timestamp || 0) * 1000,
     selection: typeof selection === 'string' ? selection : undefined, quotedId: stanzaId(raw.quotedId) };
 }

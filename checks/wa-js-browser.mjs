@@ -61,6 +61,13 @@ try {
   const node = { id: 'welcome', text: '请选择', options: [{ label: '产品介绍', next: 'products' }] };
   assert.equal(await sendFlow(client, reply.jid, node, 'buttons'), 'TEXT');
   assert.equal(await sendFlow(client, reply.jid, node, 'buttons', Buffer.from([255,216,255,0])), 'IMAGE');
+  await page.evaluate(() => {
+    window.WPP.chat.list = async () => [{ id: '123456789@c.us', name: 'Customer' }];
+    window.WPP.chat.getMessages = async () => [{ id: 'false_123456789@c.us_HISTORY', body: 'Existing conversation', type: 'chat', t: 123 }];
+  });
+  const history = await client.fetchMessages();
+  assert.equal(history.chatCount, 1); assert.equal(history.messages[0].history, true); assert.equal(history.messages[0].chatId, '123456789@c.us');
+  assert.equal(normalizeWaMessage(history.messages[0]).text, 'Existing conversation');
   const calls = await page.evaluate(() => window.sent);
   assert.equal(calls[0].to, '123456789@c.us'); assert.deepEqual(calls[0].options.buttons, [{ id: 'flow:welcome:0', text: '产品介绍' }]);
   assert.equal(calls[0].options.waitForAck, true); assert.equal(calls[0].options.detectMentioned, false);

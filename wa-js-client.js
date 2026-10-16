@@ -13,7 +13,27 @@ export function installWaBridge() {
   if (window.__blueWaBridge) return;
   window.__blueWaBridge = true;
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
-  const wid = value => typeof value === 'string' ? value : value?._serialized || value?.toString?.();
+  const wid = value => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    return value._serialized || (value.user && value.server ? `${value.user}@${value.server}` : value.toString?.() !== '[object Object]' ? value.toString?.() : '');
+  };
+  window.__blueSerializeWaMessage = (msg, history = false, fallbackChat = '', fallbackName = '') => {
+    const key = msg.id;
+    const serialized = typeof key === 'string' ? key : key?._serialized || '';
+    const fromMe = typeof key?.fromMe === 'boolean' ? key.fromMe : serialized.startsWith('true_');
+    const native = msg.nativeFlowResponseMessage || msg.interactiveResponseMessage?.nativeFlowResponseMessage;
+    return {
+      id: typeof key === 'string' ? key : key?.id || key?._serialized,
+      chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe,
+      body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
+      name: fallbackName || (typeof msg.notifyName === 'string' ? msg.notifyName : ''), timestamp: Number(msg.t || 0), type: msg.type,
+      history: history || Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
+      selectedId: msg.selectedId || msg.listResponse?.singleSelectReply?.selectedRowId,
+      label: msg.selectedButtonText || msg.buttonsResponse?.selectedDisplayText,
+      nativeFlowParams: native?.paramsJson, quotedId: msg.quotedStanzaID || msg.quotedMsgId?.id || msg.quotedMsgKey?.id
+    };
+  };
   let bound = false, lastState = '', lastQr = '', lastImage = '', domQrSeen = false, authenticated = false, refreshing = false;
   function publishCode(code) {
     if (authenticated || domQrSeen || !code || code === lastQr) return;
@@ -52,22 +72,7 @@ export function installWaBridge() {
       for (const event of ['conn.main_ready', 'conn.online']) wpp.on(event, () => { void refresh(); });
       wpp.on('conn.logout', () => emit({ type: 'logout' }));
       wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
-      wpp.on('chat.new_message', msg => {
-        const key = msg.id;
-        const fromMe = Boolean(key?.fromMe);
-        const chatId = wid(key?.remote || (fromMe ? msg.to : msg.from));
-        const native = msg.nativeFlowResponseMessage || msg.interactiveResponseMessage?.nativeFlowResponseMessage;
-        emit({ type: 'message', message: {
-          id: key?.id || key?._serialized || String(key), chatId, fromMe,
-          body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
-          name: typeof msg.notifyName === 'string' ? msg.notifyName : '', timestamp: Number(msg.t || 0), type: msg.type,
-          history: Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
-          selectedId: msg.selectedId || msg.listResponse?.singleSelectReply?.selectedRowId,
-          label: msg.selectedButtonText || msg.buttonsResponse?.selectedDisplayText,
-          nativeFlowParams: native?.paramsJson,
-          quotedId: msg.quotedStanzaID || msg.quotedMsgId?.id || msg.quotedMsgKey?.id
-        } });
-      });
+      wpp.on('chat.new_message', msg => emit({ type: 'message', message: window.__blueSerializeWaMessage(msg) }));
     }
     try {
       const ready = wpp.conn.isMainReady();
@@ -139,6 +144,25 @@ export class WaJsClient {
       if (!this.closed) await this.page.evaluate(installWaBridge);
     })();
     return this.injecting;
+  }
+  async fetchMessages() {
+    return this.page.evaluate(async () => {
+      if (!window.WPP?.conn.isMainReady() || !window.__blueSerializeWaMessage) throw new Error('WhatsApp is not ready for synchronization');
+      const chats = await window.WPP.chat.list({ count: 50, ignoreGroupMetadata: true });
+      const messages = []; let failedChats = 0;
+      for (const chat of chats.slice(0, 50)) {
+        const id = typeof chat.id === 'string' ? chat.id : chat.id?._serialized || chat.id?.toString();
+        if (!/^[0-9-]+@(c\.us|lid|g\.us)$/.test(id || '')) continue;
+        try {
+          const recent = await window.WPP.chat.getMessages(id, { count: 10, includeCallMessages: false });
+          for (const msg of recent.slice(-10)) {
+            if (['protocol', 'notification', 'e2e_notification', 'gp2', 'ciphertext'].includes(msg.type)) continue;
+            messages.push(window.__blueSerializeWaMessage(msg, true, id, chat.name || chat.formattedTitle || ''));
+          }
+        } catch { failedChats++; }
+      }
+      return { messages, chatCount: chats.length, failedChats };
+    });
   }
   async sendText(jid, text, buttons = []) {
     const result = await this.page.evaluate(async ({ to, text, buttons }) => {

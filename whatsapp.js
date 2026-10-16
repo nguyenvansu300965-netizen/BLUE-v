@@ -16,7 +16,7 @@ export class WhatsAppAccount {
     this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
     this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
     this.state = { status: 'idle', qr: null, user: null, error: null };
-    this.lastAutomation = null;
+    this.lastAutomation = null; this.sync = { status: 'idle', imported: 0, error: null }; this.syncRetries = 0;
   }
   async init() {
     this.config = await loadFlows(this.flowFile);
@@ -34,7 +34,7 @@ export class WhatsAppAccount {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected') throw new AppError(409, '请先扫码连接此号码');
   }
-  snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
+  snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), sync: this.sync, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
     for (const [response, valid] of this.clients) {
       if (!valid()) { response.write('event: revoked\ndata: {}\n\n'); response.end(); this.clients.delete(response); continue; }
@@ -70,13 +70,16 @@ export class WhatsAppAccount {
       if (event.status === 'connected') {
         clearTimeout(this.startupTimer);
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
-        if (current === this.generation) await writeFile(this.sessionMarker, JSON.stringify({ engine: 'wa-js', registeredAt: Date.now() }), { mode: 0o600 });
+        if (current === this.generation) {
+          await writeFile(this.sessionMarker, JSON.stringify({ engine: 'wa-js', registeredAt: Date.now() }), { mode: 0o600 });
+          if (typeof this.client?.fetchMessages === 'function') void this.syncMessages().catch(() => {});
+        }
       }
     } else if (event.type === 'message') {
       const item = normalizeWaMessage(event.message);
       if (!item || !Number.isFinite(item.time) || item.time <= 0) return;
-      const { selection, quotedId, ...message } = item;
-      if (!this.remember(message)) return;
+      const { selection, quotedId, history, ...message } = item;
+      if (!this.remember(message) || history) return;
       void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
     } else if (event.type === 'logout') {
       await rm(this.sessionMarker, { force: true });
@@ -124,7 +127,7 @@ export class WhatsAppAccount {
     } finally { if (current === this.generation) this.connecting = false; }
   }
   stop(status = 'idle') {
-    this.generation++; clearTimeout(this.timer); clearTimeout(this.startupTimer); this.connecting = false;
+    this.generation++; clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
@@ -132,6 +135,34 @@ export class WhatsAppAccount {
     for (const response of this.clients.keys()) response.end();
     this.clients.clear();
     return this.closing || Promise.resolve();
+  }
+  async syncMessages() {
+    this.requireConnected();
+    if (this.syncing) return this.syncing;
+    const current = this.generation, client = this.client;
+    clearTimeout(this.syncTimer);
+    this.sync = { ...this.sync, status: 'syncing', error: null }; this.broadcast();
+    this.syncing = (async () => {
+      try {
+        const result = await client.fetchMessages();
+        if (current !== this.generation || !this.store.allowed(this.account)) return;
+        let imported = 0;
+        for (const raw of result.messages) {
+          const item = normalizeWaMessage({ ...raw, history: true });
+          if (!item || !Number.isFinite(item.time) || item.time <= 0) continue;
+          const { selection, quotedId, history, ...message } = item;
+          if (this.store.remember(this.account.id, message)) imported++;
+        }
+        this.sync = { status: 'done', imported, chatCount: result.chatCount, failedChats: result.failedChats, updatedAt: Date.now(), error: result.failedChats ? '部分会话暂未读取成功，可稍后再次同步' : null };
+        this.broadcast();
+        if ((!result.messages.length || result.failedChats) && this.syncRetries++ < 3) this.syncTimer = setTimeout(() => { void this.syncMessages().catch(() => {}); }, 15000);
+      } catch {
+        if (current === this.generation) {
+          this.sync = { ...this.sync, status: 'error', error: '消息同步失败，请稍后点击同步消息重试' }; this.broadcast();
+        }
+      }
+    })().finally(() => { this.syncing = null; });
+    return this.syncing;
   }
   async sendText(jid, text) {
     this.requireConnected();

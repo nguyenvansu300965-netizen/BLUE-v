@@ -34,7 +34,7 @@ npm start
 
 ## 数据与登录
 
-- `DATA_DIR/blue-v.sqlite`：用户、scrypt 密码散列、会话令牌散列、订阅、号码、每个号码最新 500 条消息及授权审计。消息在重新部署后保留；不是 WhatsApp 完整历史同步。
+- `DATA_DIR/blue-v.sqlite`：用户、scrypt 密码散列、会话令牌散列、订阅、号码、每个号码最新 500 条消息及授权审计。消息在重新部署后保留；不是 WhatsApp 完整历史同步。登录后自动读取 WhatsApp 网页可用的最近 50 个会话，每个最多 10 条；也可点击「同步消息」重试。历史导入不触发自动回复。
 - `DATA_DIR/tenants/<用户ID>/<号码ID>/browser-profile/`：敏感浏览器登录档案；同目录下 `wajs-session.json` 标记已登录、`flows.json` 保存流程、`media/` 保存图片。不要编辑或共享浏览器档案。
 - 平台登录使用 HttpOnly、SameSite=Strict Cookie，生产环境再加 Secure，7 天有效；退出登录立即撤销此登录会话。平台退出不停止仍在有效订阅中的 WhatsApp 自动回复。
 - 首次运行的 `ADMIN_USER` / `ADMIN_PASSWORD` 用于创建超级管理员。数据库已有管理员后，不会通过环境变量覆盖密码；应妥善保存账号及数据备份。
