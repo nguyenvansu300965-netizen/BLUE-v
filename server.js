@@ -1,6 +1,7 @@
 import express from 'express';
-import { mkdir, rm, writeFile, access } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { defaultTemplates } from './flow-templates.js';
+import { mkdir, rm, writeFile, access, copyFile } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store, AppError, entitlement, plans } from './store.js';
@@ -95,6 +96,27 @@ app.patch('/api/admin/users/:id', (req, res) => {
   reconcile();
   res.json({ user });
 });
+store.db.exec('CREATE TABLE IF NOT EXISTS template_settings (key TEXT PRIMARY KEY)');
+if (!store.db.prepare("SELECT key FROM template_settings WHERE key='seeded'").get()) {
+  store.db.exec('BEGIN');
+  try {
+    for (const item of defaultTemplates) store.db.prepare('INSERT INTO flow_templates(id,name,config) VALUES(?,?,?)').run(item.id, item.name, JSON.stringify(validateFlows(item.config)));
+    store.db.prepare("INSERT INTO template_settings(key) VALUES('seeded')").run();
+    store.db.exec('COMMIT');
+  } catch (error) { store.db.exec('ROLLBACK'); throw error; }
+}
+const templateMedia = path.join(dataDir, 'template-media');
+function template(id) {
+  const row = store.db.prepare('SELECT * FROM flow_templates WHERE id=?').get(id);
+  if (!row) throw new AppError(404, '示例不存在');
+  return { id: row.id, name: row.name, config: JSON.parse(row.config) };
+}
+app.get('/api/templates', (req, res) => res.json({ templates: store.db.prepare('SELECT id,name FROM flow_templates ORDER BY rowid').all() }));
+app.delete('/api/admin/templates/:templateId', (req, res) => {
+  template(req.params.templateId);
+  store.db.prepare('DELETE FROM flow_templates WHERE id=?').run(req.params.templateId);
+  res.json({ ok: true });
+});
 app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.id || '' })), user: store.publicUser(req.user) }));
 app.post('/api/accounts', (req, res) => res.status(201).json({ account: store.createAccount(req.user.id, req.body?.label) }));
 app.use('/api/accounts/:id', async (req, res, next) => {
@@ -154,6 +176,30 @@ accountRouter.post('/media', express.raw({ type: ['image/png', 'image/jpeg', 'im
 accountRouter.get('/media/:asset', (req, res) => {
   if (!/^[a-f0-9]{32}\.(png|jpg|webp)$/.test(req.params.asset)) throw new AppError(404, '图片不存在');
   res.sendFile(path.join(req.runtime.mediaDir, req.params.asset));
+});
+accountRouter.post('/templates', async (req, res) => {
+  if (req.user.role !== 'admin') throw new AppError(403, '仅超级管理员可编辑示例');
+  const name = req.body?.name;
+  if (typeof name !== 'string' || !name.trim() || name.length > 80) throw new AppError(400, '示例名称需要 1–80 字');
+  let config;
+  try { config = validateFlows(req.body.config); } catch (error) { throw new AppError(400, error.message); }
+  const id = req.body.id || randomUUID();
+  if (req.body.id) template(id);
+  else if (store.db.prepare('SELECT count(*) AS n FROM flow_templates').get().n >= 100) throw new AppError(400, '最多 100 个示例');
+  await mkdir(templateMedia, { recursive: true, mode: 0o700 });
+  for (const node of config.nodes) if (node.image) {
+    try { await copyFile(path.join(req.runtime.mediaDir, node.image), path.join(templateMedia, node.image)); }
+    catch { throw new AppError(400, '示例图片不存在，请重新上传'); }
+  }
+  store.db.prepare('INSERT INTO flow_templates(id,name,config) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,config=excluded.config').run(id, name.trim(), JSON.stringify({ ...config, enabled: false }));
+  res.json({ id, name: name.trim() });
+});
+accountRouter.post('/templates/:templateId/load', async (req, res) => {
+  const item = template(req.params.templateId);
+  const config = validateFlows(item.config);
+  await mkdir(req.runtime.mediaDir, { recursive: true, mode: 0o700 });
+  for (const node of config.nodes) if (node.image) await copyFile(path.join(templateMedia, node.image), path.join(req.runtime.mediaDir, node.image));
+  res.json({ ...config, enabled: false });
 });
 accountRouter.get('/flows', (req, res) => res.json(req.runtime.config));
 accountRouter.post('/flows', async (req, res) => {

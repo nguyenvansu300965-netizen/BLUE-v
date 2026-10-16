@@ -83,6 +83,29 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     const flow = { enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [{ id: 'hi', name: 'Welcome', text: 'Hello', triggers: ['hi'], image: asset, options: [] }] };
     assert.equal((await alice.request(`${base}/flows`, { method: 'POST', body: flow })).status, 200);
     assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/flows`, { method: 'POST', body: flow })).status, 400);
+    // Shared examples are editable only by admins; images are copied into each owner's storage.
+    assert.equal((await anonymous.request('/api/templates')).status, 401);
+    const templates = (await (await alice.request('/api/templates')).json()).templates;
+    assert.equal(templates.length, 2);
+    assert.equal((await alice.request(`${base}/templates`, { method: 'POST', body: { name: 'Denied', config: flow } })).status, 403);
+    assert.equal((await alice.request(`/api/admin/templates/${templates[0].id}`, { method: 'DELETE' })).status, 403);
+    const adminAccount = (await (await admin.request('/api/accounts', { method: 'POST', body: { label: 'Template editor' } })).json()).account;
+    const adminBase = `/api/accounts/${adminAccount.id}`;
+    const adminAsset = (await (await admin.request(`${adminBase}/media`, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: image })).json()).id;
+    assert.equal((await admin.request(`/api/admin/templates/${templates[1].id}`, { method: 'DELETE' })).status, 200);
+    const templateFlow = { ...flow, nodes: [{ ...flow.nodes[0], image: adminAsset }] };
+    assert.equal((await admin.request(`${adminBase}/templates`, { method: 'POST', body: { id: templates[0].id, name: '示例1管理员修改', config: templateFlow } })).status, 200);
+    const createdTemplate = await admin.request(`${adminBase}/templates`, { method: 'POST', body: { name: '示例3', config: templateFlow } });
+    assert.equal(createdTemplate.status, 200);
+    const savedTemplate = await createdTemplate.json();
+    templateFlow.nodes[0].text = 'Updated shared example';
+    assert.equal((await admin.request(`${adminBase}/templates`, { method: 'POST', body: { id: savedTemplate.id, name: '示例3已更新', config: templateFlow } })).status, 200);
+    assert.equal((await bob.request(`${adminBase}/templates/${savedTemplate.id}/load`, { method: 'POST' })).status, 404);
+    const loadedTemplate = await (await bob.request(`/api/accounts/${bobAccount.id}/templates/${savedTemplate.id}/load`, { method: 'POST' })).json();
+    assert.deepEqual(loadedTemplate, { ...templateFlow, enabled: false });
+    assert.deepEqual(Buffer.from(await (await bob.request(`/api/accounts/${bobAccount.id}/media/${adminAsset}`)).arrayBuffer()), image);
+    assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/flows`, { method: 'POST', body: loadedTemplate })).status, 200);
+    assert.deepEqual(await (await alice.request(`${base}/flows`)).json(), flow, 'loading a template must not alter another account');
     for (const [plan, limit] of [['pro', 5], ['vip', 10]]) {
       await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: grant(plan) });
       while ((await (await alice.request('/api/accounts')).json()).accounts.length < limit) assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: `Extra ${plan}` } })).status, 201);
@@ -124,6 +147,13 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     await restored.request('/api/auth/logout', { method: 'POST' });
     restored.setCookie(cookie); assert.equal((await restored.request('/api/accounts')).status, 401);
     const adminRestored = client(service.base); await adminRestored.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    const persistedExamples = (await (await adminRestored.request('/api/templates')).json()).templates;
+    assert.ok(!persistedExamples.some(item => item.id === templates[1].id), 'deleted defaults must not return after restart');
+    assert.ok(persistedExamples.some(item => item.id === templates[0].id && item.name === '示例1管理员修改'));
+    assert.ok((await (await adminRestored.request('/api/templates')).json()).templates.some(item => item.id === savedTemplate.id && item.name === '示例3已更新'));
+    assert.equal((await adminRestored.request(`/api/admin/templates/${savedTemplate.id}`, { method: 'DELETE' })).status, 200);
+    assert.equal((await restored.request(`${base}/templates/${savedTemplate.id}/load`, { method: 'POST' })).status, 401);
+    assert.ok(!(await (await adminRestored.request('/api/templates')).json()).templates.some(item => item.id === savedTemplate.id));
     const adminData = await (await adminRestored.request('/api/admin/users')).json();
     assert.ok(adminData.audit.length >= 4); assert.ok(!JSON.stringify(adminData).includes('password_hash'));
   } finally { await service.stop(); await rm(dataDir, { recursive: true }); }

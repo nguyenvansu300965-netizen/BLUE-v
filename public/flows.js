@@ -69,13 +69,56 @@
   el('flow-enabled').onchange = e => { config.enabled = e.target.checked; };
   el('flow-mode').onchange = e => { config.mode = e.target.value; };
   el('flow-add').onclick = () => { if (config.nodes.length >= 50) return status('最多 50 个节点'); config.nodes.push(newNode()); draw(); };
-  el('flow-example').onclick = () => {
-    if (config.nodes.length && !confirm('示例将替换当前编辑内容，是否继续？')) return;
-    config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [
-      { id: 'welcome', name: '欢迎菜单', triggers: ['你好', '菜单', 'hi'], text: '欢迎咨询！请选择你感兴趣的内容：', image: '', options: [{ label: '产品介绍', next: 'products' }, { label: '联系顾问', next: 'contact' }] },
-      { id: 'products', name: '产品介绍', triggers: [], text: '这里填写产品介绍，可上传产品图片。', image: '', options: [{ label: '联系顾问', next: 'contact' }, { label: '返回菜单', next: 'welcome' }] },
-      { id: 'contact', name: '联系顾问', triggers: [], text: '请留下您的需求，我们将尽快回复。', image: '', options: [{ label: '返回菜单', next: 'welcome' }] }
-    ] }; draw(); status('示例已载入，请修改内容后启用并保存');
+  async function loadTemplates(version = loadVersion) {
+    const data = await window.workspaceApi('/api/templates');
+    if (version !== loadVersion) return;
+    const select = el('flow-template'), previous = select.value;
+    select.replaceChildren(...data.templates.map(item => { const o = document.createElement('option'); o.value = item.id; o.textContent = item.name; return o; }));
+    if ([...select.options].some(o => o.value === previous)) select.value = previous;
+    templateControls();
+  }
+  function templateControls() {
+    const admin = Boolean(base && window.isSuperAdmin());
+    for (const id of ['template-new', 'template-update', 'template-delete']) el(id).hidden = !admin;
+    const missing = !el('flow-template').value;
+    el('template-update').disabled = missing; el('template-delete').disabled = missing;
+    el('flow-example').disabled = !base || missing;
+  }
+  el('flow-template').onchange = templateControls;
+  el('flow-example').onclick = async () => {
+    if (!base || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
+    const version = loadVersion, selected = el('flow-template').value;
+    try {
+      const result = await window.workspaceApi(`${base}/templates/${encodeURIComponent(selected)}/load`, { method: 'POST' });
+      if (version !== loadVersion) return;
+      config = result; draw(); status('示例已载入，请修改内容后启用并保存；管理员可另存或更新示例');
+    } catch (error) { if (version === loadVersion) status(error.message); }
+  };
+  async function saveTemplate(update) {
+    if (!base || busy) return;
+    const select = el('flow-template');
+    const name = prompt('示例名称', update ? select.selectedOptions[0]?.textContent : '新示例');
+    if (!name?.trim()) return;
+    const version = loadVersion;
+    busy = true;
+    try {
+      const result = await window.workspaceApi(`${base}/templates`, { method: 'POST', body: JSON.stringify({ name, config, ...(update ? { id: select.value } : {}) }) });
+      if (version !== loadVersion) return;
+      await loadTemplates(version); if (version !== loadVersion) return;
+      select.value = result.id; templateControls(); status('示例已保存，所有用户均可选择载入；当前号码流程需另行保存');
+    } catch (error) { if (version === loadVersion) status(error.message); }
+    finally { busy = false; }
+  }
+  el('template-new').onclick = () => saveTemplate(false);
+  el('template-update').onclick = () => saveTemplate(true);
+  el('template-delete').onclick = async () => {
+    if (!confirm('删除所选示例？已载入的号码流程不受影响。')) return;
+    const version = loadVersion;
+    try {
+      await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(el('flow-template').value)}`, { method: 'DELETE' });
+      if (version !== loadVersion) return;
+      await loadTemplates(version); status('示例已删除');
+    } catch (error) { if (version === loadVersion) status(error.message); }
   };
   el('flow-save').onclick = async () => {
     if (busy || !base) return;
@@ -95,8 +138,11 @@
     el('flow-nodes').replaceChildren();
     el('flow-notice').textContent = '';
     for (const id of ['flow-save', 'flow-add', 'flow-example', 'flow-enabled', 'flow-mode']) el(id).disabled = !base;
-    if (!base) return;
+    templateControls();
+    if (!base) { el('flow-template').replaceChildren(); return; }
     try {
+      await loadTemplates(version);
+      if (version !== loadVersion) return;
       const data = await window.workspaceApi(`${base}/flows`);
       if (version !== loadVersion) return;
       config = data; draw();

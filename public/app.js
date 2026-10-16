@@ -19,6 +19,7 @@ async function api(url, options = {}) {
   if (!response.ok) { if (response.status === 401 && epoch === authEpoch && !url.includes('/auth/login')) showAuth(); throw new Error(result.error || '请求失败'); }
   return result;
 }
+window.isSuperAdmin = () => me?.role === 'admin';
 window.flowBase = () => selectedAccount ? `/api/accounts/${selectedAccount}` : null;
 window.workspaceApi = api;
 function accountPath(suffix = '') { if (!selectedAccount) throw new Error('请先添加或选择号码'); return `/api/accounts/${selectedAccount}${suffix}`; }
