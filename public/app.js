@@ -86,8 +86,8 @@ function renderState(state) {
   $('connection-hint').textContent = connected ? '✓ 已关联，可以收发消息' : state.error || (state.qr ? '请使用手机 WhatsApp 扫码' : state.progress || (state.status === 'connecting' ? '正在获取二维码…' : '点击下方按钮连接 WhatsApp'));
   $('account').textContent = state.user ? `当前号码：${state.user.name || ''} ${state.user.id || ''}` : '';
   $('device-label').textContent = state.account.label;
-  $('connect').disabled = connected || state.status === 'qr';
-  $('connect').textContent = state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
+  $('connect').disabled = connected || state.status === 'qr' || state.authenticated;
+  $('connect').textContent = state.authenticated && !connected ? '正在完成登录…' : state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
   const last = state.automation.last;
   $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : '发送失败'}` : ''}`;
   renderChats(); renderMessages();

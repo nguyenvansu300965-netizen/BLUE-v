@@ -14,33 +14,42 @@ export function installWaBridge() {
   window.__blueWaBridge = true;
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
   const wid = value => typeof value === 'string' ? value : value?._serialized || value?.toString?.();
-  let bound = false, lastState = '', lastQr = '', lastImage = '';
+  let bound = false, lastState = '', lastQr = '', lastImage = '', domQrSeen = false, authenticated = false, refreshing = false;
+  function publishCode(code) {
+    if (authenticated || domQrSeen || !code || code === lastQr) return;
+    lastQr = code; emit({ type: 'qr', code });
+  }
   function readVisibleQr() {
+    if (authenticated) return;
     const container = document.querySelector('[data-ref]');
-    const code = container?.getAttribute('data-ref');
-    if (code && code.split(',').length >= 4) {
-      if (code !== lastQr) { lastQr = code; emit({ type: 'qr', code }); }
-      return;
-    }
-    const canvas = container?.querySelector('canvas') || document.querySelector('canvas[aria-label]');
-    if (!container || !canvas || canvas.width < 100) return;
+    const canvas = container?.querySelector('canvas');
+    if (!container || !canvas || canvas.width < 100 || !container.getClientRects().length) return;
     try {
+      // Copy the exact rendered QR, including any fields not known to WA-JS.
+      // Do not reconstruct it from data-ref or race it against getAuthCode().
       const image = canvas.toDataURL('image/png');
+      domQrSeen = true;
       if (image !== lastImage) { lastImage = image; emit({ type: 'qr_image', image }); }
-    } catch { /* WA-JS auth code events remain available if canvas cannot be read. */ }
+    } catch { /* Use the auth-code fallback only before a native QR was seen. */ }
   }
   async function refresh() {
-    // Login QR rendering must not depend on the internal module loader being ready.
+    if (refreshing) return;
+    refreshing = true;
+    try { await refreshOnce(); } finally { refreshing = false; }
+  }
+  async function refreshOnce() {
     readVisibleQr();
     const wpp = window.WPP;
     if (!wpp?.isReady) return;
     if (!bound) {
       bound = true;
       wpp.on('conn.auth_code_change', code => {
-        if (code?.fullCode && code.fullCode !== lastQr) { lastQr = code.fullCode; emit({ type: 'qr', code: code.fullCode }); }
+        publishCode(code?.fullCode);
         void refresh();
       });
-      for (const event of ['conn.authenticated', 'conn.main_ready', 'conn.online', 'conn.require_auth']) wpp.on(event, () => { void refresh(); });
+      wpp.on('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
+      wpp.on('conn.require_auth', () => { authenticated = false; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
+      for (const event of ['conn.main_ready', 'conn.online']) wpp.on(event, () => { void refresh(); });
       wpp.on('conn.logout', () => emit({ type: 'logout' }));
       wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
       wpp.on('chat.new_message', msg => {
@@ -62,12 +71,13 @@ export function installWaBridge() {
     }
     try {
       const ready = wpp.conn.isMainReady();
-      const status = ready ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : wpp.conn.isAuthenticated() ? 'connecting' : 'qr';
+      authenticated = authenticated || ready || wpp.conn.isAuthenticated();
+      const status = ready ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
       const user = ready ? { id: wid(wpp.conn.getMyUserId()) } : null;
-      if (status !== lastState) { lastState = status; emit({ type: 'state', status, user }); }
-      if (!ready && !wpp.conn.isAuthenticated()) {
+      if (status !== lastState) { lastState = status; emit({ type: 'state', status, user, authenticated }); }
+      if (!authenticated && !domQrSeen) {
         const code = await wpp.conn.getAuthCode();
-        if (code?.fullCode && code.fullCode !== lastQr) { lastQr = code.fullCode; emit({ type: 'qr', code: code.fullCode }); }
+        publishCode(code?.fullCode);
       }
     } catch { /* The loader may be transitioning between auth and the main app. */ }
   }
@@ -100,6 +110,8 @@ export class WaJsClient {
     this.browser.on('disconnected', () => { if (!this.closed) this.onEvent({ type: 'closed' }); });
     this.page = (await this.browser.pages())[0] || await this.browser.newPage();
     if (proxy?.username) await this.page.authenticate({ username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) });
+    const userAgent = (await this.browser.userAgent()).replace('HeadlessChrome/', 'Chrome/');
+    await this.page.setUserAgent(userAgent);
     await this.page.setBypassCSP(true);
     await this.page.exposeFunction('__blueWaEvent', event => { if (!this.closed) return this.onEvent(event); });
     // Install the DOM QR reader before navigation; it also survives page reloads.

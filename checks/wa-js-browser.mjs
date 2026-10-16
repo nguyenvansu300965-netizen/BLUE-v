@@ -20,6 +20,19 @@ try {
   await loginPage.evaluate(installWaBridge);
   for (let i = 0; i < 20 && !loginEvents.some(e => e.type === 'qr_image'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.ok(loginEvents.some(e => e.type === 'qr_image' && e.image.startsWith('data:image/png;base64,')), 'DOM QR must be readable even when WA-JS is not ready');
+  const qrCount = loginEvents.filter(e => ['qr', 'qr_image'].includes(e.type)).length;
+  await loginPage.evaluate(() => {
+    window.loginHandlers = {};
+    window.WPP = { isReady: true, on: (name, cb) => { window.loginHandlers[name] = cb; }, conn: { isMainReady: () => false, isOnline: () => true, isAuthenticated: () => false, getAuthCode: async () => ({ fullCode: 'different-api-code' }) } };
+  });
+  await loginPage.waitForFunction(() => Boolean(window.loginHandlers['conn.auth_code_change']));
+  await loginPage.evaluate(() => { window.loginHandlers['conn.auth_code_change']({ fullCode: 'different-api-code' }); });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(loginEvents.filter(e => ['qr', 'qr_image'].includes(e.type)).length, qrCount, 'auth-code fallback must not overwrite the exact native QR');
+  await loginPage.evaluate(() => { window.loginHandlers['conn.authenticated'](); window.loginHandlers['conn.auth_code_change']({ fullCode: 'stale-after-scan' }); });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(loginEvents.filter(e => ['qr', 'qr_image'].includes(e.type)).length, qrCount, 'QR must stop changing after authentication');
+  assert.ok(loginEvents.some(e => e.type === 'state' && e.authenticated && e.status === 'connecting'));
   await loginPage.close();
 
   const page = await browser.newPage();
