@@ -99,7 +99,13 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal(createdTemplate.status, 200);
     const savedTemplate = await createdTemplate.json();
     templateFlow.nodes[0].text = 'Updated shared example';
-    assert.equal((await admin.request(`${adminBase}/templates`, { method: 'POST', body: { id: savedTemplate.id, name: '示例3已更新', config: templateFlow } })).status, 200);
+    assert.equal(savedTemplate.revision, 1);
+    const updateTemplate = await admin.request(`${adminBase}/templates`, { method: 'POST', body: { id: savedTemplate.id, name: '示例3已更新', config: templateFlow, revision: 1 } });
+    assert.equal(updateTemplate.status, 200); assert.equal((await updateTemplate.json()).revision, 2);
+    assert.equal((await admin.request(`${adminBase}/templates`, { method: 'POST', body: { id: savedTemplate.id, name: 'stale tab', config: flow, revision: 1 } })).status, 409);
+    const details = await (await bob.request(`/api/accounts/${bobAccount.id}/templates/${savedTemplate.id}/load?details=1`, { method: 'POST' })).json();
+    assert.deepEqual(details.template, { id: savedTemplate.id, name: '示例3已更新', revision: 2 });
+    assert.deepEqual(details.config, { ...templateFlow, enabled: false });
     assert.equal((await bob.request(`${adminBase}/templates/${savedTemplate.id}/load`, { method: 'POST' })).status, 404);
     const loadedTemplate = await (await bob.request(`/api/accounts/${bobAccount.id}/templates/${savedTemplate.id}/load`, { method: 'POST' })).json();
     assert.deepEqual(loadedTemplate, { ...templateFlow, enabled: false });

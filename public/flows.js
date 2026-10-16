@@ -2,6 +2,8 @@
   const el = id => document.getElementById(id);
   let config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [] };
   let busy = false;
+  let ready = false;
+  let editorTemplate = null;
   let base = null;
   let loadVersion = 0;
   const status = text => { el('flow-notice').textContent = text; };
@@ -12,6 +14,7 @@
   function button(label, action) { const b = document.createElement('button'); b.type = 'button'; b.className = 'secondary'; b.textContent = label; b.onclick = action; return b; }
   function newNode() { return { id: crypto.randomUUID(), name: '新回复节点', triggers: [], text: '', image: '', options: [] }; }
   function draw() {
+    templateControls();
     el('flow-enabled').checked = config.enabled; el('flow-mode').value = config.mode;
     el('flow-nodes').replaceChildren(...config.nodes.map((node, index) => {
       const card = document.createElement('div'); card.className = 'flow-node';
@@ -41,16 +44,17 @@
       const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
       file.onchange = async () => {
         const upload = file.files[0]; if (!upload) return;
+        if (busy) return status('正在处理，请等待完成后再上传');
         if (upload.size > 5 * 1024 * 1024) return status('图片最大 5MB');
         const uploadBase = base, version = loadVersion;
-        busy = true; el('flow-save').disabled = true; status('正在上传图片…');
+        busy = true; templateControls(); status('正在上传图片…');
         try {
           const response = await fetch(`${uploadBase}/media`, { method: 'POST', headers: { 'Content-Type': upload.type }, body: upload });
           const result = await response.json(); if (!response.ok) throw new Error(result.error);
           if (version !== loadVersion) return;
-          node.image = result.id; image.src = `${base}/media/${node.image}`; image.hidden = false; status('图片已上传，保存流程后生效');
+          node.image = result.id; image.src = `${base}/media/${node.image}`; image.hidden = false; status(editorTemplate ? '图片已上传，请保存公共示例' : '图片已上传，保存流程后生效');
         } catch (error) { if (version === loadVersion) status(error.message); }
-        finally { busy = false; if (version === loadVersion) el('flow-save').disabled = !base; }
+        finally { if (version === loadVersion) { busy = false; templateControls(); } }
       };
       card.append(field('回复图片（可选，最大 5MB）', file), image, button('移除图片', () => { node.image = ''; image.hidden = true; }));
       const options = document.createElement('div'); options.className = 'flow-options';
@@ -75,66 +79,96 @@
     const data = await window.workspaceApi('/api/templates');
     if (version !== loadVersion) return;
     const select = el('flow-template'), previous = select.value;
-    select.replaceChildren(...data.templates.map(item => { const o = document.createElement('option'); o.value = item.id; o.textContent = item.name; return o; }));
+    select.replaceChildren(...data.templates.map(item => { const o = document.createElement('option'); o.value = item.id; o.textContent = `${item.name} · v${item.revision}`; return o; }));
     if ([...select.options].some(o => o.value === previous)) select.value = previous;
     templateControls();
   }
   function templateControls() {
     const admin = Boolean(base && window.isSuperAdmin());
-    for (const id of ['template-new', 'template-update', 'template-delete']) el(id).hidden = !admin;
-    const missing = !el('flow-template').value;
-    el('template-update').disabled = missing; el('template-delete').disabled = missing;
-    el('flow-example').disabled = !base || missing;
+    for (const id of ['template-new', 'template-update', 'template-delete', 'template-use']) el(id).hidden = !admin;
+    const unavailable = !base || !ready || busy, missing = !el('flow-template').value;
+    for (const id of ['flow-save', 'flow-add', 'flow-mode', 'flow-template', 'template-new', 'template-exit']) el(id).disabled = unavailable;
+    el('flow-nodes').inert = unavailable;
+    el('template-name').disabled = unavailable;
+    el('flow-enabled').disabled = unavailable || Boolean(editorTemplate);
+    el('template-update').disabled = unavailable || !editorTemplate;
+    el('template-delete').disabled = unavailable || missing;
+    el('flow-example').disabled = unavailable || missing;
+    el('template-use').disabled = unavailable || missing;
+    el('template-exit').hidden = !editorTemplate;
+    el('template-editor').hidden = !editorTemplate;
+    el('flow-save').textContent = editorTemplate ? '保存公共示例' : '保存号码流程';
+    el('flow-example').textContent = admin ? '载入并编辑示例' : '载入示例';
+    if (editorTemplate) el('template-editor-title').textContent = `公共示例：${editorTemplate.name} · v${editorTemplate.revision}`;
   }
   el('flow-template').onchange = templateControls;
-  el('flow-example').onclick = async () => {
-    if (!base || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
-    const version = loadVersion, selected = el('flow-template').value;
+  async function loadExample(editShared) {
+    if (!base || !ready || busy || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
+    const version = ++loadVersion, selected = el('flow-template').value, loadBase = base;
+    busy = true; templateControls();
     try {
-      const result = await window.workspaceApi(`${base}/templates/${encodeURIComponent(selected)}/load`, { method: 'POST' });
+      const result = await window.workspaceApi(`${loadBase}/templates/${encodeURIComponent(selected)}/load?details=1`, { method: 'POST' });
       if (version !== loadVersion) return;
-      config = result; draw(); status('示例已载入，请修改内容后启用并保存；管理员可另存或更新示例');
+      editorTemplate = editShared ? result.template : null;
+      config = result.config;
+      if (editorTemplate) el('template-name').value = editorTemplate.name;
+      draw();
+      status(editShared ? `已载入公共示例「${result.template.name}」v${result.template.revision}，修改后点击「保存公共示例」` : `已载入「${result.template.name}」v${result.template.revision}，请启用并保存号码流程`);
     } catch (error) { if (version === loadVersion) status(error.message); }
-  };
+    finally { if (version === loadVersion) { busy = false; templateControls(); } }
+  }
+  el('flow-example').onclick = () => { void loadExample(window.isSuperAdmin()); };
+  el('template-use').onclick = () => { void loadExample(false); };
+  el('template-exit').onclick = () => { if (confirm('返回当前号码的已保存流程？未保存的示例修改将丢失。')) void load(); };
   async function saveTemplate(update) {
-    if (!base || busy) return;
-    const select = el('flow-template');
-    const name = prompt('示例名称', update ? select.selectedOptions[0]?.textContent : '新示例');
-    if (!name?.trim()) return;
-    const version = loadVersion;
-    busy = true;
+    if (!base || !ready || busy) return status('正在处理，请等待完成后再保存');
+    if (update && !editorTemplate) return status('请先载入要编辑的公共示例');
+    const name = update ? el('template-name').value : prompt('新示例名称', '新示例');
+    if (!name?.trim()) return status('请填写示例名称');
+    const version = loadVersion, saveBase = base, target = editorTemplate;
+    const snapshot = structuredClone(config);
+    busy = true; templateControls();
     try {
-      const result = await window.workspaceApi(`${base}/templates`, { method: 'POST', body: JSON.stringify({ name, config, ...(update ? { id: select.value } : {}) }) });
+      const result = await window.workspaceApi(`${saveBase}/templates`, { method: 'POST', body: JSON.stringify({ name, config: snapshot, ...(update ? { id: target.id, revision: target.revision } : {}) }) });
       if (version !== loadVersion) return;
-      await loadTemplates(version); if (version !== loadVersion) return;
-      select.value = result.id; templateControls(); status('示例已保存，所有用户均可选择载入；当前号码流程需另行保存');
+      editorTemplate = result; el('template-name').value = result.name;
+      const select = el('flow-template');
+      let option = [...select.options].find(item => item.value === result.id);
+      if (!option) { option = document.createElement('option'); option.value = result.id; select.append(option); }
+      option.textContent = `${result.name} · v${result.revision}`; select.value = result.id;
+      status(`公共示例「${result.name}」已保存为 v${result.revision}，所有用户下次载入将获得此版本；当前号码流程未更改`);
     } catch (error) { if (version === loadVersion) status(error.message); }
-    finally { busy = false; }
+    finally { if (version === loadVersion) { busy = false; templateControls(); } }
   }
   el('template-new').onclick = () => saveTemplate(false);
   el('template-update').onclick = () => saveTemplate(true);
   el('template-delete').onclick = async () => {
-    if (!confirm('删除所选示例？已载入的号码流程不受影响。')) return;
-    const version = loadVersion;
+    if (!base || busy || !ready || !confirm('删除所选示例？已载入的号码流程不受影响。')) return;
+    const version = loadVersion, selected = el('flow-template').value;
+    busy = true; templateControls();
     try {
-      await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(el('flow-template').value)}`, { method: 'DELETE' });
+      await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(selected)}`, { method: 'DELETE' });
       if (version !== loadVersion) return;
-      await loadTemplates(version); status('示例已删除');
+      if (editorTemplate?.id === selected) { busy = false; await load(); return status('示例已删除，已返回号码流程'); }
+      await loadTemplates(version); if (version === loadVersion) status('示例已删除');
     } catch (error) { if (version === loadVersion) status(error.message); }
+    finally { if (version === loadVersion) { busy = false; templateControls(); } }
   };
   el('flow-save').onclick = async () => {
-    if (busy || !base) return;
+    if (busy || !base || !ready) return;
+    if (editorTemplate) return saveTemplate(true);
     const saveBase = base, version = loadVersion;
-    el('flow-save').disabled = true;
+    busy = true; templateControls();
     try {
       const response = await fetch(`${saveBase}/flows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
       const result = await response.json(); if (!response.ok) throw new Error(result.error);
       if (version === loadVersion) status('流程已保存，立即生效');
     } catch (error) { if (version === loadVersion) status(error.message); }
-    finally { if (version === loadVersion) el('flow-save').disabled = !base; }
+    finally { if (version === loadVersion) { busy = false; templateControls(); } }
   };
   async function load() {
     const version = ++loadVersion;
+    ready = false; busy = false; editorTemplate = null;
     base = window.flowBase();
     config = { enabled: false, mode: 'numbered', triggerMode: 'keywords', nodes: [] };
     el('flow-nodes').replaceChildren();
@@ -147,8 +181,8 @@
       if (version !== loadVersion) return;
       const data = await window.workspaceApi(`${base}/flows`);
       if (version !== loadVersion) return;
-      config = data; draw();
-    } catch (error) { if (version === loadVersion) { status(error.message); el('flow-save').disabled = true; } }
+      ready = true; config = data; draw();
+    } catch (error) { if (version === loadVersion) { status(error.message); templateControls(); } }
   }
   window.addEventListener('account-changed', () => { void load(); });
   void load();

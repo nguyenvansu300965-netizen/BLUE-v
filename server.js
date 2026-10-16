@@ -96,6 +96,7 @@ app.patch('/api/admin/users/:id', (req, res) => {
   reconcile();
   res.json({ user });
 });
+if (!store.db.prepare('PRAGMA table_info(flow_templates)').all().some(column => column.name === 'revision')) store.db.exec('ALTER TABLE flow_templates ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
 store.db.exec('CREATE TABLE IF NOT EXISTS template_settings (key TEXT PRIMARY KEY)');
 if (!store.db.prepare("SELECT key FROM template_settings WHERE key='seeded'").get()) {
   store.db.exec('BEGIN');
@@ -109,9 +110,9 @@ const templateMedia = path.join(dataDir, 'template-media');
 function template(id) {
   const row = store.db.prepare('SELECT * FROM flow_templates WHERE id=?').get(id);
   if (!row) throw new AppError(404, '示例不存在');
-  return { id: row.id, name: row.name, config: JSON.parse(row.config) };
+  return { id: row.id, name: row.name, config: JSON.parse(row.config), revision: row.revision };
 }
-app.get('/api/templates', (req, res) => res.json({ templates: store.db.prepare('SELECT id,name FROM flow_templates ORDER BY rowid').all() }));
+app.get('/api/templates', (req, res) => res.json({ templates: store.db.prepare('SELECT id,name,revision FROM flow_templates ORDER BY rowid').all() }));
 app.delete('/api/admin/templates/:templateId', (req, res) => {
   template(req.params.templateId);
   store.db.prepare('DELETE FROM flow_templates WHERE id=?').run(req.params.templateId);
@@ -224,22 +225,28 @@ accountRouter.post('/templates', async (req, res) => {
   let config;
   try { config = validateFlows(req.body.config); } catch (error) { throw new AppError(400, error.message); }
   const id = req.body.id || randomUUID();
-  if (req.body.id) template(id);
-  else if (store.db.prepare('SELECT count(*) AS n FROM flow_templates').get().n >= 100) throw new AppError(400, '最多 100 个示例');
+  const existing = req.body.id ? template(id) : null;
+  if (existing && req.body.revision !== undefined && req.body.revision !== existing.revision) throw new AppError(409, '示例已被其他页面更新，请重新载入最新版本后再保存');
+  if (!existing && store.db.prepare('SELECT count(*) AS n FROM flow_templates').get().n >= 100) throw new AppError(400, '最多 100 个示例');
   await mkdir(templateMedia, { recursive: true, mode: 0o700 });
   for (const node of config.nodes) if (node.image) {
     try { await copyFile(path.join(req.runtime.mediaDir, node.image), path.join(templateMedia, node.image)); }
     catch { throw new AppError(400, '示例图片不存在，请重新上传'); }
   }
-  store.db.prepare('INSERT INTO flow_templates(id,name,config) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,config=excluded.config').run(id, name.trim(), JSON.stringify({ ...config, enabled: false }));
-  res.json({ id, name: name.trim() });
+  const serialized = JSON.stringify({ ...config, enabled: false });
+  if (existing) {
+    const updated = store.db.prepare('UPDATE flow_templates SET name=?,config=?,revision=revision+1 WHERE id=? AND revision=?').run(name.trim(), serialized, id, existing.revision);
+    if (!updated.changes) throw new AppError(409, '示例已被其他页面更新或删除，请重新载入后再保存');
+  } else store.db.prepare('INSERT INTO flow_templates(id,name,config) VALUES(?,?,?)').run(id, name.trim(), serialized);
+  res.json({ id, name: name.trim(), revision: existing ? existing.revision + 1 : 1 });
 });
 accountRouter.post('/templates/:templateId/load', async (req, res) => {
   const item = template(req.params.templateId);
   const config = validateFlows(item.config);
   await mkdir(req.runtime.mediaDir, { recursive: true, mode: 0o700 });
   for (const node of config.nodes) if (node.image) await copyFile(path.join(templateMedia, node.image), path.join(req.runtime.mediaDir, node.image));
-  res.json({ ...config, enabled: false });
+  const loaded = { ...config, enabled: false };
+  res.json(req.query.details === '1' ? { config: loaded, template: { id: item.id, name: item.name, revision: item.revision } } : loaded);
 });
 accountRouter.get('/flows', (req, res) => res.json(req.runtime.config));
 accountRouter.post('/flows', async (req, res) => {
