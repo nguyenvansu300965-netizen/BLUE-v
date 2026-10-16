@@ -15,7 +15,7 @@ npm start
 
 默认仅监听回环地址。`PORT` 可调整端口；`AUTH_DIR` 可指定会话保存目录，默认 `.data/auth`。会话文件属于敏感登录凭据，勿分享或提交到 Git。运行目录需要写权限。退出/重置会话会删除本地凭据。服务重启后点击连接会复用保存的会话。
 
-此版本面向本机单用户，没有用户身份认证。公开部署前需要在受信任反向代理后配置 HTTPS 和访问认证；不要直接将 `HOST=0.0.0.0` 暴露到公网。运行时需要访问 WhatsApp 服务（包括 `web.whatsapp.com` 及其 WebSocket 连接）；受限网络可能需要管理员放行相应域名。
+此版本面向单账号管理。生产模式必须设置 `ADMIN_USER` 和 `ADMIN_PASSWORD`，页面和业务 API 使用 HTTP Basic 认证；公开部署须使用 HTTPS，并设置 `PUBLIC_ORIGIN` 为访问域名。开发模式未设置账号密码时仅限本机访问。运行时需要访问 WhatsApp 服务（包括 `web.whatsapp.com` 及其 WebSocket 连接）；受限网络可能需要管理员放行相应域名。
 
 使用固定版本 `@whiskeysockets/baileys@7.0.0-rc14`（预发布版本），依赖锁定在 package-lock.json。Baileys 为非官方库，与 WhatsApp 无隶属关系；仅用于本人或获授权账号，遵守 WhatsApp 使用条款。
 
@@ -29,6 +29,10 @@ npm start
 
 默认「兼容模式」发送图片/文案和数字菜单。「原生按钮」通过 Baileys native-flow quick_reply 发送交互消息，属于实验性支持，可能因账号、客户端或协议变化不显示或被拒收；服务端发送成功不代表客户端显示或已送达。请先用测试账号验证按钮；不兼容时切回数字菜单。本项目没有接入 Meta 官方 WhatsApp Cloud API，若业务必须保证官方交互按钮能力，需要另行接入官方 API。
 
-流程配置持久化到 `.data/flows.json`，图片保存在 `.data/media/`。可通过 `DATA_DIR` 指定绝对数据目录，需持久化并保护目录；不要将其与登录会话共享给他人。图片与流程编辑 API 也没有用户认证，仅限本机或经认证的反向代理使用。
+流程配置持久化到 `.data/flows.json`，图片保存在 `.data/media/`。可通过 `DATA_DIR` 指定绝对数据目录，需持久化并保护目录；不要将其与登录会话共享给他人。配置管理员账号密码后，图片与流程编辑 API 同样要求认证。
 
 流程 API：`GET /api/flows` 获取配置，`POST /api/flows` 保存 `{enabled, mode: "numbered"|"buttons", nodes:[{id,name,triggers:[],text,image:"",options:[{label,next}]}]}`。`POST /api/media` 以图片 MIME 类型发送二进制图片，返回 `{id}`，用于节点的 image 字段。
+
+## Railway 部署
+
+已提供 Dockerfile、railway.json 和变量模板，详见 [Railway 部署说明](RAILWAY.md)。生产模式要求管理员账号密码；配置后页面和业务 API 使用 HTTP Basic 认证。

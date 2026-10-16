@@ -4,7 +4,7 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { mkdir, rm, readFile, writeFile, access } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { recipientJid, messageText, messageSelection } from './messages.js';
@@ -22,6 +22,22 @@ const logger = pino({ level: 'silent' });
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
 const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
 const app = express();
+const adminUser = process.env.ADMIN_USER;
+const adminPassword = process.env.ADMIN_PASSWORD;
+if ((adminUser && !adminPassword) || (!adminUser && adminPassword) || (process.env.NODE_ENV === 'production' && (!adminUser || !adminPassword))) {
+  throw new Error('Set both ADMIN_USER and ADMIN_PASSWORD before starting production deployment');
+}
+const publicOrigin = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : null;
+const equal = (a, b) => timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.use((req, res, next) => {
+  if (!adminUser) return next();
+  const authorization = req.get('authorization') || '';
+  const decoded = authorization.startsWith('Basic ') ? Buffer.from(authorization.slice(6), 'base64').toString('utf8') : '';
+  const colon = decoded.indexOf(':');
+  if (colon >= 0 && equal(decoded.slice(0, colon), adminUser) && equal(decoded.slice(colon + 1), adminPassword)) return next();
+  res.set('WWW-Authenticate', 'Basic realm="BLUE-v", charset="UTF-8"').status(401).send('Authentication required');
+});
 const clients = new Set();
 const messages = [];
 let socket, timer, generation = 0, connecting = false;
@@ -89,7 +105,7 @@ async function connect() {
 
 // This local app has no remote-user authentication. Reject cross-origin mutations.
 app.use('/api', (req, res, next) => {
-  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({ error: '禁止跨域请求' });
+  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== (publicOrigin || `${req.protocol}://${req.get('host')}`)) return res.status(403).json({ error: '禁止跨域请求' });
   next();
 });
 app.post('/api/media', express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '5mb' }), async (req, res, next) => {
@@ -165,6 +181,7 @@ app.use((error, req, res, next) => res.status(error.status === 413 ? 413 : 500).
 const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', error => {
   if (error) { console.error(`Unable to start server: ${error.code || 'listen failed'}`); process.exit(1); }
   console.log(`BLUE-v listening on port ${server.address().port}`);
+  if (process.env.AUTO_CONNECT === 'true') void connect();
 });
 function shutdown() { clearTimeout(timer); generation++; socket?.end(undefined); for (const client of clients) client.end(); server.close(() => process.exit(0)); }
 process.on('SIGTERM', shutdown);
