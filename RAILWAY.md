@@ -3,7 +3,7 @@
 ## 部署步骤
 
 1. Railway 选择 **Deploy from GitHub repo**，连接 `nguyenvansu300965-netizen/BLUE-v` 的 `main` 分支，Root Directory 使用仓库根目录。
-2. 根目录 `railway.json` 自动选择 `Dockerfile`，使用 Node.js 24，无需覆盖 Build / Start Command。
+2. 根目录 `railway.json` 自动选择 `Dockerfile`，使用 Node.js 24 并安装 Chromium、CA 证书与 tini，无需覆盖 Build / Start Command。
 3. 为服务添加 **Volume**，挂载到 `/data`。配置文件不会自动创建卷。用户、订阅、消息、流程、图片和所有 WhatsApp 登录凭据都依赖这个卷。
 4. 在 Networking 生成 HTTPS 域名，在 Variables 中配置下表。初次部署可先生成域名，再设置变量并重新部署。
 5. 访问该 HTTPS 域名，用 `ADMIN_USER` / `ADMIN_PASSWORD` 在网页登录，进入左侧「超级管理员」后台。
@@ -20,7 +20,10 @@
 | `HOST` | `0.0.0.0`，Dockerfile 已设置 |
 | `NODE_ENV` | `production`，Dockerfile 已设置，登录 Cookie 要求 HTTPS |
 | `DATA_DIR` | `/data`，Dockerfile 已设置；必须挂载持久化 Volume |
-| `AUTO_CONNECT` | 建议 `true`；仅恢复已有登录且仍在套餐配额与有效订阅内的号码 |
+| `AUTO_CONNECT` | 建议 `true`；仅恢复已有 WA-JS 登录标记且仍在套餐配额与有效订阅内的号码 |
+| `CHROMIUM_PATH` | `/usr/bin/chromium`，Dockerfile 已设置 |
+| `CHROMIUM_NO_SANDBOX` | `true`，Dockerfile 针对容器环境设置 |
+| `CHROMIUM_PROXY_SERVER` | 可选，浏览器出站代理；Railway 正常直连时无需填写 |
 | `TRUST_PROXY` | Railway 单层边缘代理部署可设 `1`，用于识别注册/登录限流的客户 IP；其他环境仅在可信代理后启用 |
 | `PORT` | 使用 Railway 自动注入值，无需填写 |
 
@@ -31,18 +34,24 @@
 - 基础版 1 个号码，高级版 5 个，VIP 10 个；管理员通过后台人工开通或续期，没有自动支付/扣款功能。
 - 每个用户独立数据；停用或到期后停止连接和自动回复，超配额号码停止但不删除，恢复套餐后可重新连接。
 - 仅运行一个服务副本、一个 Node 进程，不使用集群共用 WhatsApp 凭据。`railway.json` 配置 1 个副本。
-- 关闭休眠 / Serverless 功能（如果启用），保持连接常驻。实际费用和能力以 Railway 套餐为准；10 个号码意味着更多长连接和内存，应观察服务资源。
+- 关闭休眠 / Serverless 功能（如果启用），保持连接常驻。实际费用和能力以 Railway 套餐为准；每个号码对应独立 Chromium 进程组，10 个号码的内存与 CPU 消耗明显高于原 WebSocket 方案，应根据真实在线量观察并调整服务资源。
 - 健康检查 `/healthz` 返回 `{"ok":true}` 仅代表 Web 服务启动，不代表 WhatsApp 已连接。
 - 备份时先停止服务并完整备份 `/data`；SQLite WAL/SHM、用户数据库和号码凭据需一起保留。不要将数据卷公开。
 - 每个号码保留最新 500 条消息；客户当前自动流程步骤在重启后重置。登录凭据、订阅及流程从卷恢复。
-- WhatsApp HTTPS/WebSocket 与媒体上传必须可达。原生按钮仍需实际客户端验证，不显示时切回数字菜单。
+- Chromium 必须能访问 WhatsApp 网页及所需 HTTPS/WebSocket 和媒体资源，且通过 TLS 证书验证。原生按钮仍需实际客户端验证，不显示时切回数字菜单。
 
-## 旧版本升级
+## 从 Baileys 版本升级
 
-若 Railway 已部署旧单账号版本：先停止并备份 `/data`，保持原有 `ADMIN_USER` / `ADMIN_PASSWORD`，部署后这组凭据会初始化新的超级管理员。旧 `AUTH_DIR` 变量可移除，新版本按用户和号码保存凭据。旧根目录数据不会自动绑定用户；按 [README 升级步骤](README.md#从单账号版本升级) 安全复制到管理员的号码目录，或重新扫码。
+1. 先停止服务并完整备份 `/data`，保留同一个 Volume 和管理员变量。
+2. 部署新 Dockerfile，让 Railway 重建包含 Chromium 的镜像，勿只替换旧容器中的 JavaScript 文件。
+3. 用户、套餐、号码、消息、图片和流程继续使用原数据。
+4. 每个号码重新扫码。旧 Baileys 凭据无法供 WA-JS 使用；原有 `auth/` 目录保留，不会自动删除。新凭据保存在号码的 `browser-profile/`。
+5. 在流程中选择「WA-JS 原生按钮（实验性）」并保存，用接收方 iPhone 测试按钮显示和分支回复。图片 3 个选项时会拆成图片和单独的按钮菜单。
 
 ## 常见问题
 
+- **未安装 Chromium / 浏览器启动失败**：确认已使用新 Dockerfile 重建，`CHROMIUM_PATH=/usr/bin/chromium`，数据卷可写。
+- **浏览器不信任证书**：若有自定义出站代理，正确配置其 CA 信任，不使用忽略证书错误的参数。
 - **服务启动失败**：首次启动检查管理员变量和密码长度；生产模式检查 `PUBLIC_ORIGIN` 为 HTTPS，使用 Node 24。
 - **注册后不能添加号码**：这是待开通状态，管理员在后台开通权限、选择套餐和到期时间。
 - **保存 / 连接返回 403**：检查订阅是否有效、该号码是否超配额、`PUBLIC_ORIGIN` 是否与地址栏一致。
@@ -56,6 +65,7 @@
 npm ci
 npm run check
 npm test
+npm run test:browser
 docker build -t blue-v .
 ```
 

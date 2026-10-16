@@ -1,20 +1,19 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers } from '@whiskeysockets/baileys';
-import pino from 'pino';
 import QRCode from 'qrcode';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { mkdir, rm, readFile } from 'node:fs/promises';
+import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { messageText, messageSelection } from './messages.js';
+import { normalizeWaMessage, toStoredJid } from './messages.js';
 import { Automation, loadFlows, menuText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
+import { WaJsClient } from './wa-js-client.js';
 
 export class WhatsAppAccount {
-  constructor(account, store, dataDir) {
+  constructor(account, store, dataDir, { createClient = options => new WaJsClient(options) } = {}) {
+    this.createClient = createClient;
     this.account = account; this.store = store;
     this.dir = path.join(dataDir, 'tenants', account.user_id, account.id);
-    this.authDir = path.join(this.dir, 'auth'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
-    this.clients = new Map(); this.generation = 0; this.connecting = false; this.socket = null;
+    this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
+    this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
     this.state = { status: 'idle', qr: null, user: null, error: null };
     this.lastAutomation = null;
   }
@@ -24,7 +23,7 @@ export class WhatsAppAccount {
       this.requireConnected();
       const image = node.image ? await readFile(path.join(this.mediaDir, node.image)) : undefined;
       this.requireConnected();
-      const id = await sendFlow(this.socket, jid, node, mode, image);
+      const id = await sendFlow(this.client, jid, node, mode, image);
       this.remember({ id, jid, name: jid, text: `${node.image ? '[图片] ' : ''}${menuText(node)}`, outgoing: true, time: Date.now(), automatic: true });
       return id;
     }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); });
@@ -32,7 +31,7 @@ export class WhatsAppAccount {
   }
   requireConnected() {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
-    if (!this.socket || this.state.status !== 'connected') throw new AppError(409, '请先扫码连接此号码');
+    if (!this.client || this.state.status !== 'connected') throw new AppError(409, '请先扫码连接此号码');
   }
   snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
@@ -43,67 +42,86 @@ export class WhatsAppAccount {
   }
   update(patch) { this.state = { ...this.state, ...patch }; this.broadcast(); }
   remember(item) { const added = this.store.remember(this.account.id, item); if (added) this.broadcast(); return added; }
+  async onClientEvent(event, current) {
+    if (current !== this.generation) return;
+    if (!this.store.allowed(this.account)) { await this.stop('blocked'); return; }
+    if (event.type === 'qr' && typeof event.code === 'string') {
+      const image = await QRCode.toDataURL(event.code);
+      if (current === this.generation && this.state.status !== 'connected') this.update({ status: 'qr', qr: image, error: null });
+    } else if (event.type === 'state') {
+      if (!['connected', 'connecting', 'disconnected', 'qr'].includes(event.status)) return;
+      const user = event.user?.id ? { id: toStoredJid(event.user.id) } : null;
+      this.update({ status: event.status, user, qr: event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? 'WhatsApp 连接中断，浏览器正在重连' : null });
+      if (event.status === 'connected') {
+        await mkdir(this.dir, { recursive: true, mode: 0o700 });
+        if (current === this.generation) await writeFile(this.sessionMarker, JSON.stringify({ engine: 'wa-js', registeredAt: Date.now() }), { mode: 0o600 });
+      }
+    } else if (event.type === 'message') {
+      const item = normalizeWaMessage(event.message);
+      if (!item || !Number.isFinite(item.time) || item.time <= 0) return;
+      const { selection, quotedId, ...message } = item;
+      if (!this.remember(message)) return;
+      void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
+    } else if (event.type === 'logout') {
+      await rm(this.sessionMarker, { force: true });
+      await this.stop('logged_out');
+    } else if (event.type === 'needs_update') {
+      await this.stop('error');
+      this.update({ error: 'WhatsApp Web 要求更新，请更新 WA-JS 后重新连接' });
+    } else if (event.type === 'closed') {
+      await this.stop('disconnected');
+      this.update({ error: '浏览器连接已关闭，5 秒后重试' });
+      this.timer = setTimeout(() => { void this.connect().catch(() => this.stop('blocked')); }, 5000);
+    } else if (event.type === 'injection_error') {
+      await this.stop('error');
+      this.update({ error: 'WA-JS 未能初始化，请检查 WhatsApp 网页可达性并重试' });
+    }
+  }
   async connect() {
     if (!this.store.allowed(this.account)) throw new AppError(403, '没有使用权限');
-    if (this.connecting || this.socket) return;
+    if (this.connecting || this.client) return;
     this.connecting = true;
     clearTimeout(this.timer);
     const current = ++this.generation;
     this.update({ status: 'connecting', qr: null, error: null });
     try {
-      await mkdir(this.authDir, { recursive: true, mode: 0o700 });
-      const { state: auth, saveCreds } = await useMultiFileAuthState(this.authDir);
+      await this.closing;
       if (current !== this.generation || !this.store.allowed(this.account)) return;
-      const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
-      const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
-      const client = makeWASocket({ auth, logger: pino({ level: 'silent' }), agent, fetchAgent: agent, browser: Browsers.ubuntu('Chrome'), markOnlineOnConnect: false, syncFullHistory: false });
-      this.socket = client;
-      client.ev.on('creds.update', () => { if (current === this.generation) saveCreds().catch(() => this.update({ error: '无法保存会话，请检查磁盘权限' })); });
-      client.ev.on('connection.update', change => { void (async () => {
-        if (current !== this.generation) return;
-        if (!this.store.allowed(this.account)) { this.stop('blocked'); return; }
-        if (change.qr) {
-          const image = await QRCode.toDataURL(change.qr);
-          if (current === this.generation && this.state.status !== 'connected') this.update({ status: 'qr', qr: image });
-        }
-        if (change.connection === 'open') this.update({ status: 'connected', qr: null, user: { id: client.user?.id, name: client.user?.name }, error: null });
-        if (change.connection === 'close') {
-          this.socket = null;
-          const loggedOut = change.lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
-          this.update({ status: loggedOut ? 'logged_out' : 'disconnected', qr: null, user: null, error: loggedOut ? '请重置此号码会话后重新扫码' : '连接中断，5 秒后重试' });
-          if (!loggedOut) this.timer = setTimeout(() => { void this.connect().catch(() => this.stop('blocked')); }, 5000);
-        }
-      })().catch(() => this.update({ error: '连接状态处理失败，请重试' })); });
-      client.ev.on('messages.upsert', ({ messages: incoming, type }) => {
-        if (current !== this.generation || type !== 'notify' || !this.store.allowed(this.account)) return;
-        for (const msg of incoming) {
-          const choice = messageSelection(msg.message);
-          const text = choice.label || messageText(msg.message);
-          if (!text || !msg.key.id || !msg.key.remoteJid || msg.key.remoteJid === 'status@broadcast') continue;
-          const time = Number(msg.messageTimestamp || Date.now() / 1000) * 1000;
-          const added = this.remember({ id: msg.key.id, jid: msg.key.remoteJid, name: msg.pushName || msg.key.remoteJid, text, outgoing: Boolean(msg.key.fromMe), time });
-          if (!added) continue;
-          void this.automation.handle({ id: msg.key.id, jid: msg.key.remoteJid, fromMe: msg.key.fromMe, text, ...choice, time: Number(msg.messageTimestamp || 0) * 1000 }).catch(() => {});
-        }
-      });
-    } catch { if (current === this.generation) { this.socket?.end(undefined); this.socket = null; this.update({ status: 'error', error: '连接失败，请检查 WhatsApp 网络访问' }); } }
-    finally { if (current === this.generation) this.connecting = false; }
+      const client = this.createClient({ profileDir: this.profileDir, onEvent: event => this.onClientEvent(event, current).catch(() => {
+        if (current === this.generation) this.update({ error: 'WhatsApp 事件处理失败，请检查数据目录权限' });
+      }) });
+      this.client = client;
+      await client.start();
+    } catch (error) {
+      if (current === this.generation) {
+        await this.stop('error');
+        const hints = { CHROMIUM_MISSING: '未安装 Chromium，请检查 CHROMIUM_PATH', CERTIFICATE_UNTRUSTED: '浏览器不信任连接证书，请检查网络代理的 CA 信任配置', PROXY_REJECTED: '网络代理拒绝连接，请检查代理与 WhatsApp 域名放行设置', WEB_HTTP_403: 'WhatsApp 网页访问被拒绝，请检查出站网络设置' };
+        this.update({ error: hints[error.code] || 'WA-JS 连接失败，请检查浏览器、WhatsApp 网络及数据卷权限' });
+      }
+    } finally { if (current === this.generation) this.connecting = false; }
   }
   stop(status = 'idle') {
     this.generation++; clearTimeout(this.timer); this.connecting = false;
-    this.socket?.end(undefined); this.socket = null;
+    const client = this.client; this.client = null;
+    if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
     this.update({ status, qr: null, user: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
     for (const response of this.clients.keys()) response.end();
     this.clients.clear();
+    return this.closing || Promise.resolve();
+  }
+  async sendText(jid, text) {
+    this.requireConnected();
+    return this.client.sendText(jid, text);
   }
   async reset() {
-    const client = this.socket;
-    this.stop();
-    if (client?.user) {
-      // The local session is always cleared even when the remote logout is unavailable.
-      await Promise.race([client.logout().catch(() => {}), new Promise(resolve => { const timer = setTimeout(resolve, 3000); timer.unref(); })]);
+    if (this.client && this.state.status === 'connected') {
+      let timeout;
+      try { await Promise.race([this.client.logout().catch(() => {}), new Promise(resolve => { timeout = setTimeout(resolve, 3000); timeout.unref(); })]); }
+      finally { clearTimeout(timeout); }
     }
-    await rm(this.authDir, { recursive: true, force: true });
+    await this.stop();
+    await rm(this.profileDir, { recursive: true, force: true });
+    await rm(this.sessionMarker, { force: true });
   }
 }

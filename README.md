@@ -1,6 +1,6 @@
 # BLUE-v · 多账号 WhatsApp 工作台
 
-Node.js 24 + Baileys + Express + SQLite。提供用户注册登录、超级管理员订阅授权、多号码扫码连接、实时聊天和可配置自动回复。界面参考 WhatsApp Web 的会话列表与聊天布局，本项目为独立产品，与 WhatsApp 无隶属关系。
+Node.js 24 + **WA-JS 4.7.1** + Puppeteer + Chromium + Express + SQLite。提供用户注册登录、超级管理员订阅授权、多号码扫码连接、实时聊天和可配置自动回复。界面参考 WhatsApp Web 的会话列表与聊天布局，本项目为独立产品，与 WhatsApp 无隶属关系。
 
 ## 套餐与权限
 
@@ -20,7 +20,7 @@ Node.js 24 + Baileys + Express + SQLite。提供用户注册登录、超级管�
 
 ## 本地运行
 
-需要 **Node.js 24 或以上**，使用内置 SQLite。首次启动需要设置管理员账号（4–64 位字母、数字、点、横线或 @）与至少 12 位密码：
+需要 **Node.js 24 或以上与 Chromium**，使用内置 SQLite。Docker 镜像会安装 Chromium，本机请先安装系统 Chromium（Debian/Ubuntu 可使用系统软件包），并通过 `CHROMIUM_PATH` 指定可执行文件。每个号码独立运行浏览器并使用持久化档案。首次启动需要设置管理员账号（4–64 位字母、数字、点、横线或 @）与至少 12 位密码：
 
 ```sh
 npm ci
@@ -30,12 +30,12 @@ npm start
 
 默认监听本机 `127.0.0.1:3000`。在网页登录，添加号码，点击「连接设备」，使用手机 WhatsApp 的「已关联的设备」扫码。每个号码独立扫码，可以切换号码和会话，新建聊天、发送文本或配置自动流程。
 
-`npm run dev` 开发；`npm run check && npm test` 验证。支持 `HOST`、`PORT`、`DATA_DIR`、`AUTO_CONNECT` 和 `PUBLIC_ORIGIN`，完整生产设置见 [Railway 部署说明](RAILWAY.md)。程序不会自动加载 `.env`，`.env.example` 仅作为变量参考。
+`npm run dev` 开发；`npm run check && npm test` 验证。支持 `HOST`、`PORT`、`DATA_DIR`、`AUTO_CONNECT`、`PUBLIC_ORIGIN` 和 `CHROMIUM_PATH`，完整生产设置见 [Railway 部署说明](RAILWAY.md)。程序不会自动加载 `.env`，`.env.example` 仅作为变量参考。
 
 ## 数据与登录
 
 - `DATA_DIR/blue-v.sqlite`：用户、scrypt 密码散列、会话令牌散列、订阅、号码、每个号码最新 500 条消息及授权审计。消息在重新部署后保留；不是 WhatsApp 完整历史同步。
-- `DATA_DIR/tenants/<用户ID>/<号码ID>/auth`：WhatsApp 登录凭据；同目录下 `flows.json` 保存流程，`media/` 保存图片。
+- `DATA_DIR/tenants/<用户ID>/<号码ID>/browser-profile/`：敏感浏览器登录档案；同目录下 `wajs-session.json` 标记已登录、`flows.json` 保存流程、`media/` 保存图片。不要编辑或共享浏览器档案。
 - 平台登录使用 HttpOnly、SameSite=Strict Cookie，生产环境再加 Secure，7 天有效；退出登录立即撤销此登录会话。平台退出不停止仍在有效订阅中的 WhatsApp 自动回复。
 - 首次运行的 `ADMIN_USER` / `ADMIN_PASSWORD` 用于创建超级管理员。数据库已有管理员后，不会通过环境变量覆盖密码；应妥善保存账号及数据备份。
 - 删除号码会删除该号码本地数据。若需撤销 WhatsApp 手机端关联，请在手机已关联设备中移除。重置号码会话仅清除该号码凭据。
@@ -51,7 +51,7 @@ npm start
 
 触发词完整匹配，忽略大小写和首尾空格；分支节点可不设触发词。兼容模式允许客户回复序号或选项文字。客户当前步骤保留 30 分钟，保存流程、断开或重启会重置。仅处理实时个人消息，忽略群聊、自己发送和过旧事件；持久化消息 ID 及进程内过滤用于避免重复处理。
 
-原生按钮通过 Baileys native-flow quick_reply 发送，为实验功能，部分账号或客户端可能不显示或被拒收，需真实账号验证。不兼容时使用数字菜单。项目尚未接入 Meta 官方 WhatsApp Cloud API。
+原生按钮使用 WA-JS 的 `sendTextMessage` / `sendFileMessage` 接口，保持上游 Native Flow 封装。最多 3 个文字回复按钮；图片附带最多 2 个按钮，3 个选项时先发图片，再发单独的按钮菜单。按钮仍为兼容功能，服务端提交成功或收到发送 ACK 都不代表 iPhone 已显示；需真实账号验证。不兼容时使用数字菜单。项目尚未接入 Meta 官方 WhatsApp Cloud API。
 
 ## API 概览
 
@@ -64,10 +64,20 @@ npm start
 - `/api/accounts/:id/state`、`events`、`connect`、`logout`、`messages`、`flows`、`media`：指定号码的状态、实时事件、关联设备、退出 WhatsApp、消息及自动回复资源。旧的全局单账号 API 已移除。
 - `GET /healthz`：公开的进程健康检查，不代表 WhatsApp 已连接。
 
-## 从单账号版本升级
+## 从 Baileys 版本升级
 
-升级前停止服务并完整备份 `DATA_DIR`。旧的 `auth/`、`flows.json` 和 `media/` 会保留，**不会自动分配给任何注册用户**。先登录超级管理员并创建一个号码，再停止服务，手动将这三项复制到该管理员对应的 `tenants/<用户ID>/<号码ID>/` 下，再启动。用户与号码 ID 可从登录后的 API 列表获取。请先在备份副本中验证，不要覆盖已有目标文件。旧 `AUTH_DIR` 变量在多账号版本不再使用。
+升级前停止服务并完整备份 `DATA_DIR`。本版本保留用户、套餐、号码、聊天记录和原有流程/图片路径，不需要新建用户或号码。**Baileys 的 `auth/` 凭据不能转换为 WA-JS 浏览器档案，每个号码必须重新扫码。** 旧凭据会保留，程序不会读取或删除它们；确认迁移成功后可由管理员安全清理。不要把旧 `auth/` 复制到 `browser-profile/`。
+
+若来自最早的全局单账号版本，旧根目录 `flows.json` 和 `media/` 可在停止服务及备份后复制到管理员新建号码的目录中，不覆盖已有文件；登录仍需重新扫码。`AUTH_DIR` 不再使用。
+
+## Chromium 运行说明
+
+- Docker 镜像内置 `/usr/bin/chromium`、CA 证书和 tini，用于启动浏览器并回收子进程；`CHROMIUM_NO_SANDBOX=true` 针对本容器运行环境设置，本机支持浏览器沙箱时不要启用它。
+- 每个号码占用一个浏览器进程组，内存/CPU 高于原来的 WebSocket 方案。套餐限额仍为 1/5/10，但服务资源必须支撑实际在线数量，不要启用服务休眠。
+- `AUTO_CONNECT=true` 仅自动恢复 WA-JS 已成功登录、有会话标记、仍有有效订阅且在配额内的号码。无标记的新号码不会在后台自动启动扫码浏览器。
+- 默认使用 `HTTPS_PROXY` / `https_proxy`；可用 `CHROMIUM_PROXY_SERVER` 指定浏览器代理。证书信任错误需通过部署机器或 Chromium 支持的信任库正确安装代理 CA 解决，不关闭 TLS 验证。
+- 停用、到期、删除、重置与服务退出都会关闭对应浏览器。重置会删除浏览器档案，需重新扫码；停用保留档案以便恢复。
 
 ## 验证范围
 
-测试覆盖注册、认证、角色限制、1/5/10 配额、并发新增、跨用户资源隔离、停用与到期撤销事件流、配置/消息持久化、自动回复分支与按钮消息构造。浏览器检查覆盖注册授权、号码切换、流程隔离、聊天布局和移动端显示。真实扫码、多号码在线、消息投递和原生按钮显示需要可访问 WhatsApp 的网络及用户手机参与，自动化测试不代表这些行为已通过。
+测试覆盖注册、认证、角色限制、1/5/10 配额、并发新增、跨用户资源隔离、停用与到期撤销事件流、配置/消息持久化、自动回复分支、WA-JS 消息映射、按钮参数及浏览器关闭生命周期。浏览器检查覆盖注册授权、号码切换、流程隔离、聊天布局和移动端显示。`npm run test:browser` 需要 Chromium，会加载真实固定版本 WA-JS 脚本，并用测试替身验证二维码事件及图片/文字按钮调用，不连接真实账号。真实扫码、多号码在线、消息投递和原生按钮显示需要可访问 WhatsApp 的网络及用户手机参与，自动化测试不代表这些行为已通过。

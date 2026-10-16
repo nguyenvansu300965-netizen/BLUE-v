@@ -87,7 +87,7 @@ function renderState(state) {
   $('device-label').textContent = state.account.label;
   $('connect').disabled = connected || ['connecting', 'qr'].includes(state.status);
   const last = state.automation.last;
-  $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已发送' : '发送失败'}` : ''}`;
+  $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : '发送失败'}` : ''}`;
   renderChats(); renderMessages();
 }
 function threads() {

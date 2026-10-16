@@ -107,7 +107,7 @@ app.use('/api/accounts/:id', async (req, res, next) => {
 });
 const accountRouter = express.Router({ mergeParams: true });
 accountRouter.delete('/', async (req, res) => {
-  req.runtime.stop();
+  await req.runtime.stop();
   await rm(req.runtime.dir, { recursive: true, force: true });
   store.deleteAccount(req.account.id); runtimes.delete(req.account.id);
   reconcile(); res.json({ ok: true });
@@ -122,7 +122,7 @@ accountRouter.get('/events', (req, res) => {
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
   res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
 });
-accountRouter.post('/connect', async (req, res) => { await req.runtime.connect(); res.json({ ok: true }); });
+accountRouter.post('/connect', (req, res) => { void req.runtime.connect().catch(() => req.runtime.stop('blocked')); res.status(202).json({ ok: true }); });
 accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.post('/messages', async (req, res) => {
   const { text, phone, jid: selectedJid } = req.body || {};
@@ -133,9 +133,9 @@ accountRouter.post('/messages', async (req, res) => {
     jid = selectedJid;
   } else { try { jid = recipientJid(phone); } catch (error) { throw new AppError(400, error.message); } }
   req.runtime.requireConnected();
-  const message = await req.runtime.socket.sendMessage(jid, { text: text.trim() });
-  req.runtime.remember({ id: message.key.id, jid, name: jid, text: text.trim(), outgoing: true, time: Date.now() });
-  res.json({ ok: true, id: message.key.id });
+  const id = await req.runtime.sendText(jid, text.trim());
+  req.runtime.remember({ id, jid, name: jid, text: text.trim(), outgoing: true, time: Date.now() });
+  res.json({ ok: true, id });
 });
 accountRouter.post('/media', express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '5mb' }), async (req, res) => {
   const data = req.body;
@@ -178,15 +178,18 @@ const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || 
   if (process.env.AUTO_CONNECT === 'true') {
     for (const user of store.users()) if (user.active) {
       for (const account of store.accounts(user.id)) if (store.allowed(account)) {
-        void access(path.join(dataDir, 'tenants', user.id, account.id, 'auth', 'creds.json')).then(() => runtime(account)).then(rt => rt.connect()).catch(() => {});
+        void access(path.join(dataDir, 'tenants', user.id, account.id, 'wajs-session.json')).then(() => runtime(account)).then(rt => rt.connect()).catch(() => {});
       }
     }
   }
 });
-function shutdown() {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return; shuttingDown = true;
   clearInterval(subscriptionTimer);
-  for (const rt of runtimes.values()) rt.stop();
-  server.close(() => { store.close(); process.exit(0); });
-  setTimeout(() => process.exit(0), 5000).unref();
+  setTimeout(() => process.exit(0), 15000).unref();
+  const closed = new Promise(resolve => server.close(resolve));
+  await Promise.all([...runtimes.values()].map(rt => rt.stop()));
+  await closed; store.close(); process.exit(0);
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);

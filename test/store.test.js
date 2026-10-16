@@ -21,7 +21,7 @@ test('subscription expiry blocks account creation and sends; messages stay isola
     assert.deepEqual(store.messages(b.id), []);
     runtime = await new WhatsAppAccount(a, store, dir).init();
     let ended = false;
-    runtime.socket = { end: () => { ended = true; } }; runtime.state.status = 'connected';
+    runtime.client = { close: async () => { ended = true; } }; runtime.state.status = 'connected';
     runtime.requireConnected();
     store.db.prepare('UPDATE users SET expires_at=? WHERE id=?').run(Date.now() - 1, user.id);
     assert.equal(entitlement(store.user(user.id)).active, false);
@@ -29,7 +29,7 @@ test('subscription expiry blocks account creation and sends; messages stay isola
     assert.throws(() => runtime.requireConnected(), /订阅/);
     assert.throws(() => store.createAccount(user.id, 'Expired'), /订阅/);
     await assert.rejects(runtime.connect(), /权限/);
-    runtime.stop('blocked'); assert.equal(ended, true); assert.equal(runtime.socket, null);
+    await runtime.stop('blocked'); assert.equal(ended, true); assert.equal(runtime.client, null);
     store.close(); store = new Store(dir);
     assert.equal(store.messages(a.id)[0].text, 'Private'); assert.equal(store.messages(b.id).length, 0);
     assert.ok(store.byName('test-user').password_hash !== 'a-long-password-123');

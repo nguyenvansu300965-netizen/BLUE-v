@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Automation, validateFlows, loadFlows, saveFlows } from '../automation.js';
-import { messageSelection } from '../messages.js';
+import { normalizeWaMessage } from '../messages.js';
 import { sendFlow } from '../flow-sender.js';
 const config = () => ({ enabled: true, mode: 'numbered', nodes: [
   { id: 'start', name: 'Welcome', triggers: ['Hi'], text: 'Choose', image: '', options: [{ label: 'Product', next: 'product' }] },
@@ -60,15 +60,23 @@ test('validates graph and persists settings across reload', async () => {
     const image = config(); image.nodes[0].image = '../../secret'; assert.throws(() => validateFlows(image));
   } finally { await rm(folder, { recursive: true }); }
 });
-test('decodes button response and builds native or image/text replies', async () => {
-  assert.equal(messageSelection({ interactiveResponseMessage: { nativeFlowResponseMessage: { paramsJson: '{"id":"flow:start:0"}' } } }).selection, 'flow:start:0');
-  assert.equal(messageSelection({ interactiveResponseMessage: { nativeFlowResponseMessage: { paramsJson: '{bad' } } }).selection, undefined);
-  let content, relayed;
-  const socket = { user: { id: '123456789@s.whatsapp.net' }, sendMessage: async (jid, data) => { content = data; return { key: { id: 'text' } }; }, relayMessage: async (jid, message) => { relayed = message; } };
+test('sends WA-JS text/image buttons, splitting three-button media and propagating failures', async () => {
+  const calls = [];
+  const client = { sendText: async (...args) => { calls.push(['text', ...args]); return 'text-id'; }, sendImage: async (...args) => { calls.push(['image', ...args]); return 'image-id'; } };
   const node = config().nodes[0];
-  await sendFlow(socket, '987654321@s.whatsapp.net', node, 'numbered', Buffer.from('image'));
-  assert.ok(Buffer.isBuffer(content.image)); assert.match(content.caption, /1\. Product/);
-  await sendFlow(socket, '987654321@s.whatsapp.net', node, 'buttons');
-  const button = relayed.viewOnceMessage.message.interactiveMessage.nativeFlowMessage.buttons[0];
-  assert.equal(JSON.parse(button.buttonParamsJson).id, 'flow:start:0');
+  const jid = '987654321@s.whatsapp.net';
+  const image = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
+  assert.equal(await sendFlow(client, jid, node, 'numbered', image), 'image-id');
+  assert.match(calls[0][2], /^data:image\/png;base64,/); assert.match(calls[0][3], /1\. Product/); assert.deepEqual(calls[0][4], []);
+  calls.length = 0;
+  assert.equal(await sendFlow(client, jid, node, 'buttons'), 'text-id');
+  assert.deepEqual(calls[0][3], [{ id: 'flow:start:0', text: 'Product' }]);
+  calls.length = 0;
+  await sendFlow(client, jid, node, 'buttons', image);
+  assert.equal(calls[0][0], 'image'); assert.equal(calls[0][4][0].id, 'flow:start:0');
+  calls.length = 0;
+  const three = { ...node, options: Array.from({ length: 3 }, (_, i) => ({ label: `Choice ${i}`, next: 'product' })) };
+  assert.equal(await sendFlow(client, jid, three, 'buttons', image), 'text-id');
+  assert.deepEqual(calls.map(c => c[0]), ['image', 'text']); assert.deepEqual(calls[0][4], []); assert.equal(calls[1][3].length, 3);
+  await assert.rejects(sendFlow({ sendText: async () => { throw new Error('offline'); } }, jid, node, 'buttons'), /offline/);
 });

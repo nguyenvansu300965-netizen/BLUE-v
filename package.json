@@ -1,6 +1,6 @@
 {
   "name": "blue-v-whatsapp",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,13 +10,13 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check store.js && node --check whatsapp.js && node --check automation.js && node --check flow-sender.js && node --check public/app.js && node --check public/flows.js"
+    "check": "node --check server.js && node --check store.js && node --check whatsapp.js && node --check wa-js-client.js && node --check automation.js && node --check flow-sender.js && node --check public/app.js && node --check public/flows.js",
+    "test:browser": "node checks/wa-js-browser.mjs"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "@wppconnect/wa-js": "4.7.1",
     "express": "^5.1.0",
-    "https-proxy-agent": "^9.1.0",
-    "pino": "^9.6.0",
+    "puppeteer-core": "25.14.0",
     "qrcode": "^1.5.4"
   }
 }
