@@ -8,7 +8,8 @@ import { AppError } from './store.js';
 import { WaJsClient } from './wa-js-client.js';
 
 export class WhatsAppAccount {
-  constructor(account, store, dataDir, { createClient = options => new WaJsClient(options) } = {}) {
+  constructor(account, store, dataDir, { createClient = options => new WaJsClient(options), connectTimeout = 120000 } = {}) {
+    this.connectTimeout = connectTimeout;
     this.createClient = createClient;
     this.account = account; this.store = store;
     this.dir = path.join(dataDir, 'tenants', account.user_id, account.id);
@@ -45,14 +46,20 @@ export class WhatsAppAccount {
   async onClientEvent(event, current) {
     if (current !== this.generation) return;
     if (!this.store.allowed(this.account)) { await this.stop('blocked'); return; }
-    if (event.type === 'qr' && typeof event.code === 'string') {
+    if (event.type === 'progress') {
+      this.update({ progress: String(event.detail || '').slice(0, 200) });
+    } else if (event.type === 'qr_image' && typeof event.image === 'string' && event.image.startsWith('data:image/png;base64,') && event.image.length < 1000000) {
+      clearTimeout(this.startupTimer);
+      if (this.state.status !== 'connected') this.update({ status: 'qr', qr: event.image, error: null, progress: null });
+    } else if (event.type === 'qr' && typeof event.code === 'string') {
       const image = await QRCode.toDataURL(event.code);
-      if (current === this.generation && this.state.status !== 'connected') this.update({ status: 'qr', qr: image, error: null });
+      if (current === this.generation && this.state.status !== 'connected') { clearTimeout(this.startupTimer); this.update({ status: 'qr', qr: image, error: null, progress: null }); }
     } else if (event.type === 'state') {
       if (!['connected', 'connecting', 'disconnected', 'qr'].includes(event.status)) return;
       const user = event.user?.id ? { id: toStoredJid(event.user.id) } : null;
       this.update({ status: event.status, user, qr: event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? 'WhatsApp 连接中断，浏览器正在重连' : null });
       if (event.status === 'connected') {
+        clearTimeout(this.startupTimer);
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
         if (current === this.generation) await writeFile(this.sessionMarker, JSON.stringify({ engine: 'wa-js', registeredAt: Date.now() }), { mode: 0o600 });
       }
@@ -84,6 +91,13 @@ export class WhatsAppAccount {
     clearTimeout(this.timer);
     const current = ++this.generation;
     this.update({ status: 'connecting', qr: null, error: null });
+    this.startupTimer = setTimeout(() => {
+      if (current !== this.generation || this.state.qr || this.state.status === 'connected') return;
+      const progress = this.state.progress || '等待 WhatsApp 登录页面';
+      const closing = this.stop('error'), stoppedGeneration = this.generation;
+      void closing.then(() => { if (this.generation === stoppedGeneration) this.update({ error: `获取二维码超时：${progress}。请重新连接，或查看 Railway 网络、内存和浏览器日志。` }); });
+    }, this.connectTimeout);
+    this.startupTimer.unref();
     try {
       await this.closing;
       if (current !== this.generation || !this.store.allowed(this.account)) return;
@@ -95,17 +109,17 @@ export class WhatsAppAccount {
     } catch (error) {
       if (current === this.generation) {
         await this.stop('error');
-        const hints = { CHROMIUM_MISSING: '未安装 Chromium，请检查 CHROMIUM_PATH', CERTIFICATE_UNTRUSTED: '浏览器不信任连接证书，请检查网络代理的 CA 信任配置', PROXY_REJECTED: '网络代理拒绝连接，请检查代理与 WhatsApp 域名放行设置', WEB_HTTP_403: 'WhatsApp 网页访问被拒绝，请检查出站网络设置' };
+        const hints = { PAGE_TIMEOUT: '打开 WhatsApp 网页超时，请检查 Railway 出站网络', CHROMIUM_MISSING: '未安装 Chromium，请检查 CHROMIUM_PATH', CERTIFICATE_UNTRUSTED: '浏览器不信任连接证书，请检查网络代理的 CA 信任配置', PROXY_REJECTED: '网络代理拒绝连接，请检查代理与 WhatsApp 域名放行设置', WEB_HTTP_403: 'WhatsApp 网页访问被拒绝，请检查出站网络设置' };
         this.update({ error: hints[error.code] || 'WA-JS 连接失败，请检查浏览器、WhatsApp 网络及数据卷权限' });
       }
     } finally { if (current === this.generation) this.connecting = false; }
   }
   stop(status = 'idle') {
-    this.generation++; clearTimeout(this.timer); this.connecting = false;
+    this.generation++; clearTimeout(this.timer); clearTimeout(this.startupTimer); this.connecting = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
-    this.update({ status, qr: null, user: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
+    this.update({ status, qr: null, user: null, progress: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
     for (const response of this.clients.keys()) response.end();
     this.clients.clear();
     return this.closing || Promise.resolve();

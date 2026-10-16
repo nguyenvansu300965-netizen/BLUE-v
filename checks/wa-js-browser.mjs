@@ -12,6 +12,16 @@ try {
   const bundle = await bundlePage.evaluate(() => ({ version: window.WPP.version, text: typeof window.WPP.chat.sendTextMessage, file: typeof window.WPP.chat.sendFileMessage, qr: typeof window.WPP.conn.getAuthCode }));
   assert.equal(bundle.version, '4.7.1'); assert.equal(bundle.text, 'function'); assert.equal(bundle.file, 'function'); assert.equal(bundle.qr, 'function');
   await bundlePage.close();
+  const loginPage = await browser.newPage();
+  const loginEvents = [];
+  await loginPage.exposeFunction('__blueWaEvent', event => { loginEvents.push(event); });
+  await loginPage.setContent('<div data-ref="test-ref"><canvas width="240" height="240"></canvas></div>');
+  await loginPage.evaluate(() => { window.WPP = { isReady: false }; const canvas = document.querySelector('canvas'); canvas.getContext('2d').fillRect(0, 0, 240, 240); });
+  await loginPage.evaluate(installWaBridge);
+  for (let i = 0; i < 20 && !loginEvents.some(e => e.type === 'qr_image'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(loginEvents.some(e => e.type === 'qr_image' && e.image.startsWith('data:image/png;base64,')), 'DOM QR must be readable even when WA-JS is not ready');
+  await loginPage.close();
+
   const page = await browser.newPage();
   const received = [];
   await page.exposeFunction('__blueWaEvent', event => { received.push(event); });

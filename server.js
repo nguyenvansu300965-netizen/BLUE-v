@@ -122,7 +122,11 @@ accountRouter.get('/events', (req, res) => {
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
   res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
 });
-accountRouter.post('/connect', (req, res) => { void req.runtime.connect().catch(() => req.runtime.stop('blocked')); res.status(202).json({ ok: true }); });
+accountRouter.post('/connect', async (req, res) => {
+  if (req.body?.restart === true) await req.runtime.stop();
+  void req.runtime.connect().catch(() => req.runtime.stop('blocked'));
+  res.status(202).json({ ok: true });
+});
 accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.post('/messages', async (req, res) => {
   const { text, phone, jid: selectedJid } = req.body || {};

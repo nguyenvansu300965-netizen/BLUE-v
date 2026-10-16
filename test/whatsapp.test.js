@@ -55,3 +55,16 @@ test('blocked account cancels a browser that is still starting and never becomes
     assert.equal(closed, true); assert.equal(rt.state.status, 'blocked'); assert.equal(rt.client, null);
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+test('startup without a QR times out, closes its browser and becomes retryable', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-qr-timeout-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('test-admin', 'test-password-123');
+    let closed = 0;
+    rt = await new WhatsAppAccount(store.createAccount(store.byName('test-admin').id, 'One'), store, dir, { connectTimeout: 20, createClient: () => ({ start: async () => {}, close: async () => { closed++; } }) }).init();
+    await rt.connect();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(rt.state.status, 'error'); assert.match(rt.state.error, /获取二维码超时/); assert.equal(rt.client, null); assert.equal(closed, 1);
+    await rt.connect(); assert.equal(rt.state.status, 'connecting');
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
+});

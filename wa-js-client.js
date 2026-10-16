@@ -14,13 +14,32 @@ export function installWaBridge() {
   window.__blueWaBridge = true;
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
   const wid = value => typeof value === 'string' ? value : value?._serialized || value?.toString?.();
-  let bound = false, lastState = '', lastQr = '';
+  let bound = false, lastState = '', lastQr = '', lastImage = '';
+  function readVisibleQr() {
+    const container = document.querySelector('[data-ref]');
+    const code = container?.getAttribute('data-ref');
+    if (code && code.split(',').length >= 4) {
+      if (code !== lastQr) { lastQr = code; emit({ type: 'qr', code }); }
+      return;
+    }
+    const canvas = container?.querySelector('canvas') || document.querySelector('canvas[aria-label]');
+    if (!container || !canvas || canvas.width < 100) return;
+    try {
+      const image = canvas.toDataURL('image/png');
+      if (image !== lastImage) { lastImage = image; emit({ type: 'qr_image', image }); }
+    } catch { /* WA-JS auth code events remain available if canvas cannot be read. */ }
+  }
   async function refresh() {
+    // Login QR rendering must not depend on the internal module loader being ready.
+    readVisibleQr();
     const wpp = window.WPP;
     if (!wpp?.isReady) return;
     if (!bound) {
       bound = true;
-      wpp.on('conn.auth_code_change', () => { void refresh(); });
+      wpp.on('conn.auth_code_change', code => {
+        if (code?.fullCode && code.fullCode !== lastQr) { lastQr = code.fullCode; emit({ type: 'qr', code: code.fullCode }); }
+        void refresh();
+      });
       for (const event of ['conn.authenticated', 'conn.main_ready', 'conn.online', 'conn.require_auth']) wpp.on(event, () => { void refresh(); });
       wpp.on('conn.logout', () => emit({ type: 'logout' }));
       wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
@@ -66,6 +85,7 @@ export class WaJsClient {
     this.profileDir = profileDir; this.onEvent = onEvent; this.launch = launch; this.closed = false;
   }
   async start() {
+    this.onEvent({ type: 'progress', stage: 'browser', detail: '正在启动 Chromium 浏览器…' });
     const executablePath = await browserExecutable();
     await mkdir(this.profileDir, { recursive: true, mode: 0o700 });
     if (this.closed) return;
@@ -82,12 +102,16 @@ export class WaJsClient {
     if (proxy?.username) await this.page.authenticate({ username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) });
     await this.page.setBypassCSP(true);
     await this.page.exposeFunction('__blueWaEvent', event => { if (!this.closed) return this.onEvent(event); });
+    // Install the DOM QR reader before navigation; it also survives page reloads.
+    await this.page.evaluateOnNewDocument(installWaBridge);
     this.page.on('domcontentloaded', () => { if (!this.closed) void this.inject().catch(() => { if (!this.closed) this.onEvent({ type: 'injection_error' }); }); });
     this.page.on('error', () => { if (!this.closed) this.onEvent({ type: 'closed' }); });
     this.page.on('framenavigated', frame => { if (frame === this.page.mainFrame()) this.injecting = null; });
     let response;
+    this.onEvent({ type: 'progress', stage: 'page', detail: '正在打开 WhatsApp 登录页面…' });
     try { response = await this.page.goto('https://web.whatsapp.com/', { waitUntil: 'domcontentloaded', timeout: 90000 }); }
     catch (error) {
+      if (error.name === 'TimeoutError') error.code = 'PAGE_TIMEOUT';
       if (error.message.includes('ERR_CERT_')) error.code = 'CERTIFICATE_UNTRUSTED';
       if (error.message.includes('ERR_TUNNEL_CONNECTION_FAILED')) error.code = 'PROXY_REJECTED';
       throw error;
@@ -98,8 +122,8 @@ export class WaJsClient {
   inject() {
     if (!this.injecting) this.injecting = (async () => {
       if (this.closed) return;
+      this.onEvent({ type: 'progress', stage: 'inject', detail: '正在载入 WA-JS，等待 WhatsApp 显示二维码…' });
       await this.page.addScriptTag({ path: waScript });
-      await this.page.waitForFunction(() => Boolean(window.WPP?.isReady), { timeout: 90000 });
       if (!this.closed) await this.page.evaluate(installWaBridge);
     })();
     return this.injecting;

@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const planNames = { basic: '基础套餐', pro: '高级套餐', vip: 'VIP 套餐' };
 const statusNames = { idle: '未连接', connecting: '连接中', qr: '等待扫码', connected: '已连接', disconnected: '重连中', logged_out: '已退出', blocked: '权限受限', error: '连接失败' };
 let me = null, accounts = [], selectedAccount = '', selectedThread = '', draftPhone = '', messages = [], stream = null, registration = false, sending = false, connected = false;
-let noticeTimer, authEpoch = 0;
+let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { stream?.close(); stream = null; }
 function showAuth() {
@@ -64,7 +64,7 @@ async function enter(user) {
   await refreshAccounts();
 }
 function switchAccount() {
-  closeStream(); connected = false; selectedThread = ''; draftPhone = ''; messages = [];
+  closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = accounts.find(a => a.id === selectedAccount)?.label || ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
   $('send').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
@@ -77,15 +77,17 @@ function switchAccount() {
   stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('status').textContent = '工作台重连中'; } };
 }
 function renderState(state) {
+  connectionStatus = state.status;
   connected = state.status === 'connected'; messages = state.messages;
   $('status').textContent = statusNames[state.status] || state.status; $('status').classList.toggle('online', connected);
   $('send').disabled = !connected || !selectedThread || sending;
   $('qr').hidden = !state.qr; if (state.qr) $('qr').src = state.qr;
   document.querySelector('.qr-placeholder').hidden = Boolean(state.qr) || connected;
-  $('connection-hint').textContent = connected ? '✓ 已关联，可以收发消息' : state.error || (state.qr ? '请使用手机 WhatsApp 扫码' : state.status === 'connecting' ? '正在获取二维码…' : '点击下方按钮连接 WhatsApp');
+  $('connection-hint').textContent = connected ? '✓ 已关联，可以收发消息' : state.error || (state.qr ? '请使用手机 WhatsApp 扫码' : state.progress || (state.status === 'connecting' ? '正在获取二维码…' : '点击下方按钮连接 WhatsApp'));
   $('account').textContent = state.user ? `当前号码：${state.user.name || ''} ${state.user.id || ''}` : '';
   $('device-label').textContent = state.account.label;
-  $('connect').disabled = connected || ['connecting', 'qr'].includes(state.status);
+  $('connect').disabled = connected || state.status === 'qr';
+  $('connect').textContent = state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
   const last = state.automation.last;
   $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : '发送失败'}` : ''}`;
   renderChats(); renderMessages();
@@ -181,7 +183,7 @@ $('remove-account').onclick = async () => {
 };
 $('open-device').onclick = () => { if (selectedAccount) $('device-dialog').showModal(); };
 $('close-device').onclick = () => $('device-dialog').close();
-$('connect').onclick = async () => { try { await api(accountPath('/connect'), { method: 'POST' }); } catch (error) { notice(error.message); } };
+$('connect').onclick = async () => { try { await api(accountPath('/connect'), { method: 'POST', body: JSON.stringify({ restart: connectionStatus === 'connecting' }) }); } catch (error) { notice(error.message); } };
 $('logout').onclick = async () => {
   if (!confirm('退出并清除此号码的 WhatsApp 登录会话？不会删除平台账号。')) return;
   try { await api(accountPath('/logout'), { method: 'POST' }); switchAccount(); } catch (error) { notice(error.message); }
