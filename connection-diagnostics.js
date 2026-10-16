@@ -12,7 +12,8 @@ export async function resourceSample(read = file => readFile(file, 'utf8')) {
 export function connectionDiagnostic(error, stage, before = {}, after = {}) {
   const text = String(error?.message || ''), rawCode = String(error?.code || '');
   let code;
-  if (rawCode === 'ENOMEM' || /out of memory|cannot allocate memory|oom-kill/i.test(text) || (after.oomKills !== null && before.oomKills !== null && after.oomKills > before.oomKills)) code = 'BROWSER_OOM';
+  if (rawCode === 'BROWSER_RESOURCE_CONFIG') code = rawCode;
+  else if (rawCode === 'ENOMEM' || /out of memory|cannot allocate memory|oom-kill/i.test(text) || (after.oomKills !== null && before.oomKills !== null && after.oomKills > before.oomKills)) code = 'BROWSER_OOM';
   else if (rawCode === 'BROWSER_PROFILE_OTHER_HOST') code = rawCode;
   else if (/SingletonLock|ProcessSingleton|already running|profile.*in use/i.test(text)) code = 'BROWSER_PROFILE_LOCKED';
   else if (rawCode === 'ENOSPC' || /no space left on device/i.test(text)) code = 'DATA_DISK_FULL';
@@ -31,7 +32,8 @@ export function connectionDiagnostic(error, stage, before = {}, after = {}) {
     BROWSER_PROFILE_OTHER_HOST: '锁来自另一容器。请确认 Railway Replicas 为 1，再设置 CHROMIUM_SINGLE_REPLICA=true 并重新部署，系统会尝试恢复残留锁，保留登录档案。',
     DATA_DISK_FULL: '数据卷空间不足，请扩容 Railway 数据卷后重试。',
     DATA_PERMISSION: '浏览器或数据目录无访问权限，请检查 CHROMIUM_PATH 与数据卷权限。',
-    BROWSER_PROCESS_LIMIT: '服务器无法创建更多浏览器进程或线程，请检查 Railway 的内存和进程限制。',
+    BROWSER_PROCESS_LIMIT: '服务器无法创建更多浏览器进程或线程。请核对下方线程配额；若部署了线程优化版本仍到达上限，需要调整 Railway 的 PID 配额或减少在线号码。',
+    BROWSER_RESOURCE_CONFIG: '浏览器 CPU 配置失败，请确认 util-linux/taskset 已安装，CHROMIUM_CPU_LIMIT 为 0–64；设为 0 可关闭 CPU 绑定。',
     BROWSER_START_TIMEOUT: 'Chromium 启动超时，请检查 Railway 内存、CPU 是否接近上限。',
     BROWSER_LAUNCH_FAILED: 'Chromium 启动失败，请根据同一错误码查看 Railway Deploy Logs。',
     BROWSER_CRASHED: 'Chromium 已意外关闭，请检查 Railway 是否发生内存不足或浏览器进程退出。',
@@ -45,7 +47,8 @@ export function connectionDiagnostic(error, stage, before = {}, after = {}) {
     WHATSAPP_CONNECT_FAILED: 'WhatsApp 连接失败，请根据错误码及启动阶段查看 Railway Deploy Logs。'
   };
   const memory = after.memoryMb !== null && after.memoryMb !== undefined ? ` 当前服务器内存 ${after.memoryMb}${after.memoryLimitMb ? ` / ${after.memoryLimitMb}` : ''} MB。` : '';
-  return { code, stage: ['browser', 'page', 'inject'].includes(stage) ? stage : 'unknown', resources: after, message: `${hints[code]}${memory} [${code}]` };
+  const tasks = after.pids !== null && after.pids !== undefined ? ` 当前进程/线程 ${after.pids}${after.pidsLimit ? ` / ${after.pidsLimit}` : '（上限未提供）'}。` : '';
+  return { code, stage: ['browser', 'page', 'inject'].includes(stage) ? stage : 'unknown', resources: after, message: `${hints[code]}${memory}${tasks} [${code}]` };
 }
 
 // Log a bounded startup explanation, never connection secrets or URLs.

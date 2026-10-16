@@ -76,3 +76,11 @@ docker build -t blue-v .
 连接窗口显示启动浏览器、打开 WhatsApp 页面、载入 WA-JS 等阶段。二维码读取不再依赖 WA-JS 内部模块就绪。等待期间可点「重新连接」关闭旧浏览器后重试；120 秒仍未获取二维码会停止并显示具体超时阶段。连接失败会显示错误码和当前容器内存，并在 Deploy Logs 写入 `whatsapp_connect_failed`，包括启动阶段、内存上限、OOM 次数、进程/线程数量及经过过滤的启动错误原因。`BROWSER_PROFILE_LOCKED` 表示此号码仍有浏览器占用；Docker 默认启用 `CHROMIUM_SINGLE_REPLICA=true`（只适用于本项目要求的单副本部署），遇到旧容器残留锁时会检查本机进程、仅移除 `SingletonLock/SingletonSocket/SingletonCookie` 并重试一次，保留 Cookie、IndexedDB 及登录档案。不要把同一数据卷挂到多个活跃副本；多副本环境必须关闭此开关并先分离会话存储。`BROWSER_PROCESS_LIMIT` 表示进程/线程创建受限，`BROWSER_OOM` 表示内存不足证据，`BROWSER_START_TIMEOUT` 表示启动超时。这些故障不代表存在两个用户的固定上限。若提示证书、代理或网页访问超时，请按提示检查 Railway 运行环境，而不是反复重置账号。
 
 登录二维码优先直接复制 WhatsApp 页面原图，避免网页图与 WA-JS 生成码互相覆盖。扫码认证后会隐藏二维码并等待同步；同步超过 180 秒则停止本次连接并允许重试，浏览器档案保留。不要在手机正在关联设备时点击重置。
+
+## 浏览器进程/线程配额
+
+Railway 的 PID 配额同时计算进程和线程，与内存/CPU 配额分开。`pids: 958, pidsLimit: 1000, oomKills: 0` 表示线程配额已接近上限，不能靠增加内存解决。多核主机上，每个 Chromium 会按可见 CPU 数量建立工作线程池。
+
+Docker 默认 `CHROMIUM_CPU_LIMIT=2`，通过 `taskset` 为每个号码最多绑定两个可用 CPU，启动时轮换分配核心组；Node 服务和其他号码保留自己的 CPU。另限制绘制线程为 1、渲染进程为 2，关闭服务端浏览器的 GPU/3D 软件光栅化（保留二维码所需的 2D Canvas），并对浏览器启动排队以降低峰值。每个号码仍使用独立 Chromium 和登录档案。需要提高单个号码的 CPU 并发时可调整此变量，`0` 关闭绑定；代价是可能创建更多工作线程。
+
+部署后重新启动的浏览器才使用新参数。错误窗口会显示进程/线程的已用量与上限；优化后若仍接近平台上限，需要调整平台 PID 配额或分散在线号码，不能保证无限并发。

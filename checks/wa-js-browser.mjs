@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { browserResources } from '../browser-resources.js';
 import puppeteer from 'puppeteer-core';
 import { browserExecutable, WaJsClient, installWaBridge, waScript } from '../wa-js-client.js';
 import { normalizeWaMessage } from '../messages.js';
 import { sendFlow } from '../flow-sender.js';
 
-const browser = await puppeteer.launch({ executablePath: await browserExecutable(), headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+const resources = await browserResources(await browserExecutable());
+const browser = await puppeteer.launch({ ...resources, headless: true, args: [...resources.args, '--no-sandbox', '--disable-dev-shm-usage'] });
 try {
   const bundlePage = await browser.newPage();
   await bundlePage.goto('about:blank');
