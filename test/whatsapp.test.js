@@ -35,6 +35,10 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     await events[0](incoming); await a.automation.queue;
     assert.equal(calls.filter(c => c[0] === 'text').length, 1); assert.deepEqual(calls.find(c => c[0] === 'text')[3], [{ id: 'flow:start:0', text: 'Next' }]);
     await events[0](incoming); await a.automation.queue; assert.equal(calls.filter(c => c[0] === 'text').length, 1);
+    await events[0]({ type: 'message', message: { id: 'DECRYPT', chatId: '123456789@c.us', type: 'ciphertext', timestamp: Date.now() / 1000 } });
+    await events[0]({ type: 'message', message: { id: 'DECRYPT', chatId: '123456789@c.us', type: 'chat', body: 'Decrypted content', timestamp: Date.now() / 1000 } });
+    assert.equal(store.messages(a.account.id).find(m => m.id === 'DECRYPT').text, 'Decrypted content');
+    assert.ok(a.receiver.lastMessageAt);
     assert.equal(store.messages(b.account.id).length, 0);
     await a.reset();
     assert.equal(a.client, null); assert.equal(a.state.status, 'idle');

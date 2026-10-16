@@ -14,7 +14,7 @@ export function stanzaId(value) {
   return /^(true|false)_[^_]+_/.test(value) ? value.split('_')[2] : value;
 }
 export function normalizeWaMessage(raw) {
-  if (!raw || typeof raw.chatId !== 'string') return null;
+  if (!raw || typeof raw.chatId !== 'string' || ['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return null;
   const id = stanzaId(raw.id), jid = toStoredJid(raw.chatId);
   if (!id || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid)) return null;
   let params = {};

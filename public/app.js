@@ -67,18 +67,20 @@ function switchAccount() {
   closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = accounts.find(a => a.id === selectedAccount)?.label || ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
-  $('send').disabled = true; $('sync-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
+  $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
   window.dispatchEvent(new Event('account-changed'));
   if (!selectedAccount) return;
   const id = selectedAccount;
   stream = new EventSource(`/api/accounts/${id}/events`);
   stream.onmessage = event => { if (id === selectedAccount) renderState(JSON.parse(event.data)); };
   stream.addEventListener('revoked', () => { if (id !== selectedAccount) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
-  stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
+  stream.onerror = () => { if (id === selectedAccount) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
 }
 function renderState(state) {
   connectionStatus = state.status;
   connected = state.status === 'connected'; messages = state.messages;
+  $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '实时接收已就绪') : '消息接收初始化中…');
+  $('receiver-status').title = state.receiver ? `收到事件 ${state.receiver.received}，未解析 ${state.receiver.rejected}` : '';
   $('sync-status').textContent = state.sync?.status === 'syncing' ? '正在导入最近会话…' : state.sync?.error || (state.sync?.updatedAt ? `最近同步新增 ${state.sync.imported} 条` : '');
   $('sync-messages').disabled = !connected || state.sync?.status === 'syncing';
   $('sync-messages').textContent = state.sync?.status === 'syncing' ? '同步中…' : '同步消息';

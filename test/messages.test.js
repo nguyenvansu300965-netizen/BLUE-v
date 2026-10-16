@@ -16,6 +16,7 @@ test('normalizes WA-JS message keys and native button responses including histor
   assert.equal(normalizeWaMessage({ ...raw, selectedButtonId: 'flow:start:1' }).selection, 'flow:start:1');
   assert.equal(normalizeWaMessage({ ...raw, history: true }).history, true);
   assert.equal(normalizeWaMessage({ ...raw, chatId: 'status@broadcast' }), null);
+  assert.equal(normalizeWaMessage({ ...raw, type: 'ciphertext' }), null);
   assert.equal(stanzaId({ id: 'PLAIN' }), 'PLAIN');
   assert.equal(normalizeWaMessage({ ...raw, body: '', caption: 'Photo caption' }).text, 'Photo caption');
 });

@@ -57,6 +57,28 @@ try {
   for (let i = 0; i < 20 && !received.some(e => e.type === 'message'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   const reply = normalizeWaMessage(received.find(e => e.type === 'message').message);
   assert.equal(reply.selection, 'flow:welcome:0'); assert.equal(reply.quotedId, 'TEXT'); assert.equal(reply.jid, '123456789@s.whatsapp.net');
+  await page.evaluate(() => {
+    window.rawHandlers = {}; window.rawModels = [];
+    window.WPP.whatsapp = { MsgStore: { models: window.rawModels, on: (event, cb) => { window.rawHandlers[event] = cb; } } };
+    window.fixtureHandlers['conn.online']();
+  });
+  await page.waitForFunction(() => Boolean(window.rawHandlers.add));
+  const beforeRaw = received.filter(e => e.type === 'message').length;
+  await page.evaluate(() => {
+    const message = { id: { id: 'DECRYPTED', remote: { user: '123456789', server: 'c.us' }, fromMe: false }, type: 'ciphertext', t: Math.floor(Date.now() / 1000) };
+    window.rawHandlers.add(message);
+    message.type = 'chat'; message.body = 'New message after decryption';
+    Object.defineProperty(message, 'quotedMsgId', { get() { throw new Error('Optional quote module missing'); } });
+    window.rawHandlers['change:type'](message);
+    window.fixtureHandlers['chat.new_message'](message);
+    window.rawModels.push({ id: { id: 'MISSED_EVENT', remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'New chat without event callback', t: Math.floor(Date.now() / 1000) });
+    window.rawModels.push({ id: { id: 'OLD_HISTORY', remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'Old history must not become live', t: Math.floor(Date.now() / 1000) - 86400 });
+  });
+  for (let i = 0; i < 40 && !received.some(e => e.type === 'message' && e.message.id === 'MISSED_EVENT'); i++) await new Promise(resolve => setTimeout(resolve, 200));
+  const live = received.filter(e => e.type === 'message').slice(beforeRaw);
+  assert.equal(live.filter(e => e.message.id === 'DECRYPTED').length, 1, 'ciphertext must not mask plaintext and dual events must deduplicate');
+  assert.ok(live.some(e => e.message.id === 'MISSED_EVENT'), 'store sweep must recover a missed event in a new conversation');
+  assert.ok(!live.some(e => e.message.id === 'OLD_HISTORY'), 'old history must not trigger live reception');
   const client = new WaJsClient({ profileDir: '/unused', onEvent() {} }); client.page = page;
   const node = { id: 'welcome', text: '请选择', options: [{ label: '产品介绍', next: 'products' }] };
   assert.equal(await sendFlow(client, reply.jid, node, 'buttons'), 'TEXT');

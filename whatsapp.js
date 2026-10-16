@@ -16,6 +16,7 @@ export class WhatsAppAccount {
     this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
     this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
     this.state = { status: 'idle', qr: null, user: null, error: null };
+    this.receiver = { ready: false, received: 0, rejected: 0, lastEventAt: null, lastMessageAt: null, error: null };
     this.lastAutomation = null; this.sync = { status: 'idle', imported: 0, error: null }; this.syncRetries = 0;
   }
   async init() {
@@ -34,7 +35,7 @@ export class WhatsAppAccount {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected') throw new AppError(409, '请先扫码连接此号码');
   }
-  snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), sync: this.sync, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
+  snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
     for (const [response, valid] of this.clients) {
       if (!valid()) { response.write('event: revoked\ndata: {}\n\n'); response.end(); this.clients.delete(response); continue; }
@@ -46,7 +47,11 @@ export class WhatsAppAccount {
   async onClientEvent(event, current) {
     if (current !== this.generation) return;
     if (!this.store.allowed(this.account)) { await this.stop('blocked'); return; }
-    if (event.type === 'progress') {
+    if (event.type === 'receiver_ready') {
+      this.receiver.ready = true; this.receiver.error = null; this.broadcast();
+    } else if (event.type === 'receiver_error') {
+      this.receiver.error = event.code === 'MESSAGE_SERIALIZATION' ? '新消息解析异常' : '备用接收通道暂不可用'; this.broadcast();
+    } else if (event.type === 'progress') {
       this.update({ progress: String(event.detail || '').slice(0, 200) });
     } else if (event.type === 'qr_image' && typeof event.image === 'string' && event.image.startsWith('data:image/png;base64,') && event.image.length < 1000000) {
       clearTimeout(this.startupTimer);
@@ -76,8 +81,10 @@ export class WhatsAppAccount {
         }
       }
     } else if (event.type === 'message') {
+      this.receiver.received++; this.receiver.lastEventAt = Date.now();
       const item = normalizeWaMessage(event.message);
-      if (!item || !Number.isFinite(item.time) || item.time <= 0) return;
+      if (!item || !Number.isFinite(item.time) || item.time <= 0) { this.receiver.rejected++; this.broadcast(); return; }
+      this.receiver.lastMessageAt = Date.now();
       const { selection, quotedId, history, ...message } = item;
       if (!this.remember(message) || history) return;
       void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
@@ -128,6 +135,7 @@ export class WhatsAppAccount {
   }
   stop(status = 'idle') {
     this.generation++; clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
+    this.receiver.ready = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
