@@ -13,6 +13,7 @@ export function connectionDiagnostic(error, stage, before = {}, after = {}) {
   const text = String(error?.message || ''), rawCode = String(error?.code || '');
   let code;
   if (rawCode === 'ENOMEM' || /out of memory|cannot allocate memory|oom-kill/i.test(text) || (after.oomKills !== null && before.oomKills !== null && after.oomKills > before.oomKills)) code = 'BROWSER_OOM';
+  else if (rawCode === 'BROWSER_PROFILE_OTHER_HOST') code = rawCode;
   else if (/SingletonLock|ProcessSingleton|already running|profile.*in use/i.test(text)) code = 'BROWSER_PROFILE_LOCKED';
   else if (rawCode === 'ENOSPC' || /no space left on device/i.test(text)) code = 'DATA_DISK_FULL';
   else if (['EACCES', 'EPERM'].includes(rawCode) || /permission denied/i.test(text)) code = 'DATA_PERMISSION';
@@ -26,7 +27,8 @@ export function connectionDiagnostic(error, stage, before = {}, after = {}) {
   else code = stage === 'browser' ? 'BROWSER_LAUNCH_FAILED' : stage === 'inject' ? 'WAJS_INJECTION_FAILED' : 'WHATSAPP_CONNECT_FAILED';
   const hints = {
     BROWSER_OOM: 'Chromium 启动或运行时内存不足。请增加 Railway 内存，或停止不使用的号码后重试。',
-    BROWSER_PROFILE_LOCKED: '此号码的浏览器档案被占用。请确认 Railway 只运行一个副本，再重新部署释放残留浏览器；无需删除登录档案。',
+    BROWSER_PROFILE_LOCKED: '此号码仍有浏览器使用登录档案，已保留锁及登录数据。请确认没有重复运行的服务后重试。',
+    BROWSER_PROFILE_OTHER_HOST: '锁来自另一容器。请确认 Railway Replicas 为 1，再设置 CHROMIUM_SINGLE_REPLICA=true 并重新部署，系统会尝试恢复残留锁，保留登录档案。',
     DATA_DISK_FULL: '数据卷空间不足，请扩容 Railway 数据卷后重试。',
     DATA_PERMISSION: '浏览器或数据目录无访问权限，请检查 CHROMIUM_PATH 与数据卷权限。',
     BROWSER_PROCESS_LIMIT: '服务器无法创建更多浏览器进程或线程，请检查 Railway 的内存和进程限制。',

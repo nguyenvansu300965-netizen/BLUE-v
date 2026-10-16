@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer-core';
+import { launchWithProfileRecovery } from './profile-recovery.js';
 import { createRequire } from 'node:module';
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -177,7 +178,8 @@ export class WaJsClient {
     const proxyValue = process.env.CHROMIUM_PROXY_SERVER || process.env.HTTPS_PROXY || process.env.https_proxy;
     const proxy = proxyValue ? new URL(proxyValue) : null;
     if (proxy) args.push(`--proxy-server=${proxy.protocol}//${proxy.host}`);
-    this.launching = this.launch({ executablePath, userDataDir: this.profileDir, headless: true, args, timeout: 60000, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, protocolTimeout: 120000 });
+    const launchOptions = { executablePath, userDataDir: this.profileDir, headless: true, args, timeout: 60000, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false, protocolTimeout: 120000 };
+    this.launching = launchWithProfileRecovery(() => this.launch(launchOptions), this.profileDir, { allowForeignHost: process.env.CHROMIUM_SINGLE_REPLICA === 'true', canceled: () => this.closed, onRecovery: () => this.onEvent({ type: 'progress', stage: 'browser', detail: '已清理残留的浏览器锁，正在恢复此号码登录档案…' }) });
     this.browser = await this.launching;
     if (this.closed) { await this.browser.close(); return; }
     this.browser.on('disconnected', () => { if (!this.closed) this.onEvent({ type: 'closed' }); });

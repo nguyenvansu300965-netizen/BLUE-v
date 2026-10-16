@@ -11,7 +11,7 @@
     "dev": "node --watch server.js",
     "test": "node --test",
     "check": "node --check server.js && node --check store.js && node --check whatsapp.js && node --check wa-js-client.js && node --check automation.js && node --check flow-sender.js && node --check public/app.js && node --check public/flows.js",
-    "test:browser": "node checks/wa-js-browser.mjs && node checks/template-editor-browser.mjs && node checks/account-isolation-browser.mjs"
+    "test:browser": "node checks/wa-js-browser.mjs && node checks/template-editor-browser.mjs && node checks/account-isolation-browser.mjs && node checks/profile-recovery-browser.mjs"
   },
   "dependencies": {
     "@wppconnect/wa-js": "4.7.1",
