@@ -46,6 +46,30 @@ try {
     await page.waitForFunction(() => !document.getElementById('flow-example').disabled);
   }
   await login(admin, 'template-admin', 'admin-test-123');
+  // Reproduce the empty-number administrator shown in the report.
+  await admin.click('#nav-flows');
+  await admin.waitForFunction(() => document.querySelectorAll('#flow-template option').length >= 2 && !document.getElementById('flow-save').disabled && document.querySelector('.flow-node textarea'));
+  assert.equal(await admin.$eval('#account-select', el => el.value), '');
+  assert.equal(await admin.$eval('#flow-add', el => el.disabled), false);
+  assert.equal(await admin.$eval('#template-use', el => el.disabled), true);
+  assert.equal(await admin.$eval('#flow-enabled', el => el.disabled), true);
+  await fill(admin, '.flow-node textarea', 'Global template without owning a number');
+  admin.once('dialog', dialog => dialog.accept('无码管理示例'));
+  await admin.click('#template-new');
+  await admin.waitForFunction(() => document.getElementById('flow-notice').textContent.includes('已保存为 v1'));
+  const globalImage = `${dir}/global.png`;
+  await writeFile(globalImage, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jU1kAAAAASUVORK5CYII=', 'base64'));
+  await (await admin.$('.flow-node input[type=file]')).uploadFile(globalImage);
+  await admin.waitForFunction(() => { const img = document.querySelector('.flow-node .flow-image'); return img.src.includes('/api/admin/template-assets/media/') && img.complete && img.naturalWidth > 0 && !document.getElementById('flow-save').disabled; });
+  await admin.click('#flow-save'); await admin.waitForFunction(() => document.getElementById('flow-notice').textContent.includes('已保存为 v2'));
+  const isolatedTemplateId = await admin.$eval('#flow-template', el => el.value);
+  const globalSaved = (await request(admin, `/api/admin/templates/${isolatedTemplateId}`)).data;
+  assert.equal(globalSaved.config.nodes[0].text, 'Global template without owning a number'); assert.ok(globalSaved.config.nodes[0].image);
+  await admin.reload(); await admin.waitForFunction(() => !document.getElementById('workspace').hidden); await admin.click('#nav-flows');
+  await admin.waitForFunction(() => !document.getElementById('flow-example').disabled);
+  await admin.select('#flow-template', isolatedTemplateId); admin.once('dialog', dialog => dialog.accept()); await admin.click('#flow-example');
+  await admin.waitForFunction(() => document.querySelector('.flow-node textarea')?.value === 'Global template without owning a number');
+  const accountCount = (await request(admin, '/api/accounts')).data.accounts.length; assert.equal(accountCount, 0);
   const adminId = (await request(admin, '/api/auth/me')).data.user.id;
   const adminAccount = legacyAccount(dir, adminId, 'Existing admin number');
   await openFlows(admin);
@@ -94,7 +118,7 @@ try {
   await admin.waitForFunction(() => document.getElementById('flow-notice').textContent.includes('流程已保存'));
   assert.equal((await request(admin, `/api/accounts/${adminAccount.id}/flows`)).data.nodes[0].text, saved.nodes[0].text);
   assert.deepEqual(errors, []);
-  console.log('PASS: admin Save updates the shared example; a newly registered user loads v2 text, image and branches; account saves remain separate.');
+  console.log('PASS: an admin with zero numbers edits, uploads images, saves/reloads shared templates; admin Save updates the shared example; a newly registered user loads v2 text, image and branches; account saves remain separate.');
 } finally {
   await browser?.close();
   if (service.exitCode === null) { const exited = once(service, 'exit'); service.kill('SIGTERM'); await exited; }

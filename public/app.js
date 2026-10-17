@@ -44,6 +44,7 @@ window.workspaceApi = api;
 function accountPath(suffix = '') { if (!selectedAccount) throw new Error('请先添加或选择号码'); return `/api/accounts/${selectedAccount}${suffix}`; }
 function showPage(name) {
   for (const page of ['chat', 'flows', 'admin']) { $(`page-${page}`).hidden = page !== name; $(`nav-${page}`).classList.toggle('active', page === name); }
+  if (name === 'flows') window.dispatchEvent(new Event('flows-opened'));
   if (name === 'chat') { markCurrentRead(); renderChats(); }
   if (name === 'admin') { void loadAdmin(); void loadTransferTemplates(); }
 }
@@ -90,6 +91,7 @@ async function enter(user) {
   showAuth(); authEpoch++;
   me = user; updateMembership(user); $('auth-screen').hidden = true; $('workspace').hidden = false; $('password').value = ''; showPage('chat');
   await refreshAccounts();
+  if (!selectedAccount) window.dispatchEvent(new Event('account-changed'));
 }
 function switchAccount() {
   const managed = Boolean(accounts.find(a => a.id === selectedAccount)?.managed);
@@ -378,7 +380,7 @@ async function changeUserPassword(reset) {
 $('password-form').onsubmit = event => { event.preventDefault(); void changeUserPassword(false); };
 $('password-reset').onclick = () => { void changeUserPassword(true); };
 $('nav-chat').onclick = () => showPage('chat');
-$('nav-flows').onclick = () => { if (!selectedAccount) return notice('请先选择可用号码，再配置自动回复'); showPage('flows'); };
+$('nav-flows').onclick = () => { if (!selectedAccount && me?.role !== 'admin') return notice('请先选择可用号码，再配置自动回复'); showPage('flows'); };
 $('nav-admin').onclick = () => showPage('admin');
 function localDate(iso) { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
 async function loadAdmin() {

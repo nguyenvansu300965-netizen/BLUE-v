@@ -6,6 +6,7 @@
   let editorTemplate = null;
   let base = null;
   let loadVersion = 0;
+  const mediaBase = () => editorTemplate || (!base && window.isSuperAdmin()) ? '/api/admin/template-assets' : base;
   const status = text => { el('flow-notice').textContent = text; };
   const field = (label, input) => { const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label), input); return wrapper; };
   function input(value, change, multiline = false) {
@@ -40,19 +41,18 @@
       const variables = document.createElement('p'); variables.className = 'muted';
       variables.textContent = '可用变量：{full_name} 对方 WhatsApp 名称，{phone_number} 含国家区号的手机号。例如：Dear user {full_name}, hello! {phone_number}。支持文字和图片文案。名称不可用时显示号码；号码无法识别时显示“未知号码”。'; card.append(variables);
 
-      const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `${base}/media/${node.image}`;
+      const image = document.createElement('img'); image.className = 'flow-image'; image.hidden = !node.image; if (node.image) image.src = `${mediaBase()}/media/${node.image}`;
       const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp';
       file.onchange = async () => {
         const upload = file.files[0]; if (!upload) return;
         if (busy) return status('正在处理，请等待完成后再上传');
         if (upload.size > 5 * 1024 * 1024) return status('图片最大 5MB');
-        const uploadBase = base, version = loadVersion;
+        const uploadBase = mediaBase(), version = loadVersion;
         busy = true; templateControls(); status('正在上传图片…');
         try {
-          const response = await fetch(`${uploadBase}/media`, { method: 'POST', headers: { 'Content-Type': upload.type }, body: upload });
-          const result = await response.json(); if (!response.ok) throw new Error(result.error);
+          const result = await window.workspaceApi(`${uploadBase}/media`, { method: 'POST', headers: { 'Content-Type': upload.type }, body: upload });
           if (version !== loadVersion) return;
-          node.image = result.id; image.src = `${base}/media/${node.image}`; image.hidden = false; status(editorTemplate ? '图片已上传，请保存公共示例' : '图片已上传，保存流程后生效');
+          node.image = result.id; image.src = `${mediaBase()}/media/${node.image}`; image.hidden = false; status(editorTemplate ? '图片已上传，请保存公共示例' : '图片已上传，保存流程后生效');
         } catch (error) { if (version === loadVersion) status(error.message); }
         finally { if (version === loadVersion) { busy = false; templateControls(); } }
       };
@@ -84,33 +84,33 @@
     templateControls();
   }
   function templateControls() {
-    const admin = Boolean(base && window.isSuperAdmin());
+    const admin = window.isSuperAdmin();
     for (const id of ['template-new', 'template-update', 'template-delete', 'template-use', 'template-export-code', 'template-import-code']) el(id).hidden = !admin;
-    const unavailable = !base || !ready || busy, missing = !el('flow-template').value;
+    const unavailable = (!base && !admin) || !ready || busy, missing = !el('flow-template').value;
     for (const id of ['flow-save', 'flow-add', 'flow-mode', 'flow-template', 'template-new', 'template-exit']) el(id).disabled = unavailable;
     el('flow-nodes').inert = unavailable;
     el('template-name').disabled = unavailable;
-    el('flow-enabled').disabled = unavailable || Boolean(editorTemplate);
-    el('template-update').disabled = unavailable || !editorTemplate;
+    el('flow-enabled').disabled = unavailable || Boolean(editorTemplate) || !base;
+    el('template-update').disabled = unavailable || !editorTemplate?.id;
     el('template-delete').disabled = unavailable || missing;
     el('flow-example').disabled = unavailable || missing;
-    el('template-use').disabled = unavailable || missing;
-    el('template-exit').hidden = !editorTemplate;
+    el('template-use').disabled = unavailable || missing || !base;
+    el('template-exit').hidden = !editorTemplate || !base;
     el('template-editor').hidden = !editorTemplate;
-    el('flow-save').textContent = editorTemplate ? '保存公共示例' : '保存号码流程';
+    el('flow-save').textContent = editorTemplate ? (editorTemplate.id ? '保存公共示例' : '保存为新示例') : '保存号码流程';
     el('flow-example').textContent = admin ? '载入并编辑示例' : '载入示例';
     if (editorTemplate) el('template-editor-title').textContent = `公共示例：${editorTemplate.name} · v${editorTemplate.revision}`;
   }
   el('flow-template').onchange = templateControls;
   el('template-export-code').onclick = () => window.openTemplateExport(el('flow-template').value);
   el('template-import-code').onclick = () => window.openTemplateImport();
-  window.addEventListener('templates-transferred', () => { if (base) void loadTemplates().catch(error => status(error.message)); });
+  window.addEventListener('templates-transferred', () => { if (base || window.isSuperAdmin()) void loadTemplates().catch(error => status(error.message)); });
   async function loadExample(editShared) {
-    if (!base || !ready || busy || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
+    if ((!base && !window.isSuperAdmin()) || !ready || busy || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
     const version = ++loadVersion, selected = el('flow-template').value, loadBase = base;
     busy = true; templateControls();
     try {
-      const result = await window.workspaceApi(`${loadBase}/templates/${encodeURIComponent(selected)}/load?details=1`, { method: 'POST' });
+      const result = editShared ? await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(selected)}`).then(item => ({ template: item, config: { ...item.config, enabled: false } })) : await window.workspaceApi(`${loadBase}/templates/${encodeURIComponent(selected)}/load?details=1`, { method: 'POST' });
       if (version !== loadVersion) return;
       editorTemplate = editShared ? result.template : null;
       config = result.config;
@@ -124,11 +124,11 @@
   el('template-use').onclick = () => { void loadExample(false); };
   el('template-exit').onclick = () => { if (confirm('返回当前号码的已保存流程？未保存的示例修改将丢失。')) void load(); };
   async function saveTemplate(update) {
-    if (!base || !ready || busy) return status('正在处理，请等待完成后再保存');
-    if (update && !editorTemplate) return status('请先载入要编辑的公共示例');
+    if ((!base && !window.isSuperAdmin()) || !ready || busy) return status('正在处理，请等待完成后再保存');
+    if (update && !editorTemplate?.id) return status('请先载入要编辑的公共示例');
     const name = update ? el('template-name').value : prompt('新示例名称', '新示例');
     if (!name?.trim()) return status('请填写示例名称');
-    const version = loadVersion, saveBase = base, target = editorTemplate;
+    const version = loadVersion, saveBase = editorTemplate || !base ? '/api/admin' : base, target = editorTemplate;
     const snapshot = structuredClone(config);
     busy = true; templateControls();
     try {
@@ -146,20 +146,20 @@
   el('template-new').onclick = () => saveTemplate(false);
   el('template-update').onclick = () => saveTemplate(true);
   el('template-delete').onclick = async () => {
-    if (!base || busy || !ready || !confirm('删除所选示例？已载入的号码流程不受影响。')) return;
+    if ((!base && !window.isSuperAdmin()) || busy || !ready || !confirm('删除所选示例？已载入的号码流程不受影响。')) return;
     const version = loadVersion, selected = el('flow-template').value;
     busy = true; templateControls();
     try {
       await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(selected)}`, { method: 'DELETE' });
       if (version !== loadVersion) return;
-      if (editorTemplate?.id === selected) { busy = false; await load(); return status('示例已删除，已返回号码流程'); }
+      if (editorTemplate?.id === selected) { busy = false; await load(); return status('示例已删除，已刷新编辑区'); }
       await loadTemplates(version); if (version === loadVersion) status('示例已删除');
     } catch (error) { if (version === loadVersion) status(error.message); }
     finally { if (version === loadVersion) { busy = false; templateControls(); } }
   };
   el('flow-save').onclick = async () => {
-    if (busy || !base || !ready) return;
-    if (editorTemplate) return saveTemplate(true);
+    if (busy || (!base && !window.isSuperAdmin()) || !ready) return;
+    if (editorTemplate) return saveTemplate(Boolean(editorTemplate.id));
     const saveBase = base, version = loadVersion;
     busy = true; templateControls();
     try {
@@ -178,15 +178,22 @@
     el('flow-notice').textContent = '';
     for (const id of ['flow-save', 'flow-add', 'flow-example', 'flow-enabled', 'flow-mode']) el(id).disabled = !base;
     templateControls();
-    if (!base) { el('flow-template').replaceChildren(); return; }
+    if (!base && !window.isSuperAdmin()) { el('flow-template').replaceChildren(); return; }
     try {
       await loadTemplates(version);
       if (version !== loadVersion) return;
+      if (!base) {
+        const selected = el('flow-template').value;
+        if (selected) { const item = await window.workspaceApi(`/api/admin/templates/${encodeURIComponent(selected)}`); if (version !== loadVersion) return; editorTemplate = item; config = { ...item.config, enabled: false }; el('template-name').value = item.name; }
+        else { editorTemplate = { id: null, name: '新示例', revision: 0 }; el('template-name').value = '新示例'; }
+        ready = true; draw(); status('管理员公共示例编辑：无需添加或连接WhatsApp号码，可直接编辑、上传图片和保存。'); return;
+      }
       const data = await window.workspaceApi(`${base}/flows`);
       if (version !== loadVersion) return;
       ready = true; config = data; draw();
     } catch (error) { if (version === loadVersion) { status(error.message); templateControls(); } }
   }
+  window.addEventListener('flows-opened', () => { if (!ready || base !== window.flowBase()) void load(); });
   window.addEventListener('account-changed', () => { void load(); });
   void load();
 })();
