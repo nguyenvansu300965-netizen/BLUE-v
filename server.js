@@ -1,3 +1,4 @@
+import { exportTemplate, importTemplate } from './template-transfer.js';
 import express from 'express';
 import { defaultTemplates } from './flow-templates.js';
 import { mkdir, rm, writeFile, access, copyFile, readFile } from 'node:fs/promises';
@@ -69,7 +70,8 @@ app.use('/api', (req, res, next) => {
   }
   next();
 });
-app.use(express.json({ limit: '256kb' }));
+const smallJson = express.json({ limit: '256kb' });
+app.use((req, res, next) => req.path === '/api/admin/templates/import' ? next() : smallJson(req, res, next));
 app.post('/api/auth/register', async (req, res) => {
   rate(`register:${req.ip}`, 20, 3600000);
   const user = await store.createUser(req.body?.username, req.body?.password);
@@ -168,6 +170,32 @@ function template(id) {
   return { id: row.id, name: row.name, config: JSON.parse(row.config), revision: row.revision };
 }
 app.get('/api/templates', (req, res) => res.json({ templates: store.db.prepare('SELECT id,name,revision FROM flow_templates ORDER BY rowid').all() }));
+app.get('/api/admin/templates/:templateId/export', async (req, res) => {
+  rate(`template-export:${req.user.id}`, 20, 60000);
+  const item = template(req.params.templateId);
+  try { res.json({ name: item.name, code: await exportTemplate(item, templateMedia) }); }
+  catch { throw new AppError(400, '示例图片缺失、格式异常或资源过大，请检查后重新导出'); }
+});
+app.post('/api/admin/templates/import', express.json({ limit: '24mb' }), async (req, res) => {
+  rate(`template-import:${req.user.id}`, 20, 60000);
+  let item;
+  try { item = importTemplate(req.body?.code); } catch (error) { throw new AppError(400, error.message); }
+  if (store.db.prepare('SELECT count(*) AS n FROM flow_templates').get().n >= 100) throw new AppError(400, '最多100个示例');
+  await mkdir(templateMedia, { recursive: true, mode: 0o700 }); const created = [];
+  try {
+    const mapping = new Map();
+    for (const [old, data] of item.images) {
+      const filename = `${randomBytes(16).toString('hex')}.${old.split('.').pop()}`;
+      const file = path.join(templateMedia, filename); await writeFile(file, data, { mode: 0o600, flag: 'wx' }); created.push(file); mapping.set(old, filename);
+    }
+    const config = { ...item.config, nodes: item.config.nodes.map(n => ({ ...n, image: n.image ? mapping.get(n.image) : '' })) };
+    const id = randomUUID();
+    // Recheck after file writes so concurrent imports cannot exceed the template limit.
+    if (store.db.prepare('SELECT count(*) AS n FROM flow_templates').get().n >= 100) throw new AppError(400, '最多100个示例');
+    store.db.prepare('INSERT INTO flow_templates(id,name,config) VALUES(?,?,?)').run(id, item.name, JSON.stringify(config));
+    res.status(201).json({ template: { id, name: item.name, revision: 1 } });
+  } catch (error) { await Promise.all(created.map(file => rm(file, { force: true }))); throw error; }
+});
 app.delete('/api/admin/templates/:templateId', (req, res) => {
   template(req.params.templateId);
   store.db.prepare('DELETE FROM flow_templates WHERE id=?').run(req.params.templateId);

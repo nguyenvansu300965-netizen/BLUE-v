@@ -45,7 +45,7 @@ function accountPath(suffix = '') { if (!selectedAccount) throw new Error('请�
 function showPage(name) {
   for (const page of ['chat', 'flows', 'admin']) { $(`page-${page}`).hidden = page !== name; $(`nav-${page}`).classList.toggle('active', page === name); }
   if (name === 'chat') { markCurrentRead(); renderChats(); }
-  if (name === 'admin') void loadAdmin();
+  if (name === 'admin') { void loadAdmin(); void loadTransferTemplates(); }
 }
 function updateMembership(user) {
   me = user;
@@ -661,3 +661,70 @@ $('pool-device-dialog').addEventListener('cancel', closePoolDevice);
 $('pool-connect').onclick = async () => { const id = poolDialogId; if (!id) return; try { await api(`/api/admin/numbers/${id}/connect`, { method: 'POST' }); } catch (error) { $('pool-device-status').textContent = error.message; } };
 window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') { closePoolDevice(); poolUsers = []; $('admin-numbers').replaceChildren(); $('admin-number-notice').textContent = ''; } });
 setInterval(() => { if (me?.role === 'admin' && !$('page-admin').hidden && !$('admin-numbers').contains(document.activeElement)) void loadNumberPool(); }, 15000);
+
+let templateTransfer = null;
+async function loadTransferTemplates() {
+  const epoch = authEpoch; if (me?.role !== 'admin') return;
+  try {
+    const { templates } = await api('/api/templates'); if (epoch !== authEpoch || me?.role !== 'admin') return;
+    const previous = $('admin-transfer-template').value;
+    $('admin-transfer-template').replaceChildren(...templates.map(item => new Option(`${item.name} · v${item.revision}`, item.id)));
+    if (templates.some(t => t.id === previous)) $('admin-transfer-template').value = previous;
+    $('admin-template-export').disabled = !templates.length;
+  } catch (error) { if (epoch === authEpoch) notice(error.message); }
+}
+function closeTemplateTransfer() { templateTransfer = null; $('template-transfer-dialog').close(); $('template-transfer-code').value = ''; $('template-transfer-file').value = ''; }
+function setupTemplateTransfer(mode) {
+  closeTemplateTransfer(); if (me?.role !== 'admin') return;
+  templateTransfer = { mode, epoch: authEpoch, owner: me.id, name: 'WhatsApp示例' };
+  $('template-transfer-title').textContent = mode === 'export' ? '导出示例复制码' : '导入示例复制码';
+  $('template-transfer-help').textContent = mode === 'export' ? '仅包含已保存的公共示例。复制到另一台服务器导入，或下载文件。图片较多时建议使用文件。' : '粘贴另一台服务器导出的BLUEFLOW1复制码，或上传示例文件。导入会新建示例，不覆盖已有内容，不自动启用号码流程。';
+  $('template-transfer-code').readOnly = mode === 'export'; $('template-transfer-error').textContent = '';
+  for (const id of ['template-transfer-copy', 'template-transfer-download']) { $(id).hidden = mode !== 'export'; $(id).disabled = true; }
+  for (const id of ['template-transfer-upload', 'template-transfer-import']) { $(id).hidden = mode !== 'import'; $(id).disabled = false; }
+  $('template-transfer-dialog').showModal(); return templateTransfer;
+}
+window.openTemplateExport = async id => {
+  if (!id) return notice('请先选择一个已保存的示例');
+  const context = setupTemplateTransfer('export'); if (!context) return;
+  $('template-transfer-help').textContent = '正在打包示例和图片…';
+  try {
+    const result = await api(`/api/admin/templates/${encodeURIComponent(id)}/export`);
+    if (context !== templateTransfer || context.epoch !== authEpoch || context.owner !== me?.id) return;
+    context.name = result.name; $('template-transfer-code').value = result.code;
+    $('template-transfer-help').textContent = `${result.name}：已包含文案、按钮分支和图片。图片较多时建议下载文件。`;
+    $('template-transfer-copy').disabled = false; $('template-transfer-download').disabled = false;
+  } catch (error) { if (context === templateTransfer) $('template-transfer-error').textContent = error.message; }
+};
+window.openTemplateImport = () => setupTemplateTransfer('import');
+$('admin-template-export').onclick = () => window.openTemplateExport($('admin-transfer-template').value);
+$('admin-template-import').onclick = window.openTemplateImport;
+$('template-transfer-close').onclick = closeTemplateTransfer;
+$('template-transfer-dialog').addEventListener('cancel', closeTemplateTransfer);
+$('template-transfer-copy').onclick = async () => {
+  const context = templateTransfer, code = $('template-transfer-code').value; if (!code) return;
+  try { await navigator.clipboard.writeText(code); if (context === templateTransfer) $('template-transfer-error').textContent = '复制成功，可到另一台服务器导入。'; }
+  catch { if (context === templateTransfer) { $('template-transfer-code').select(); $('template-transfer-error').textContent = '浏览器未允许自动复制，请手动复制选中文本，或下载示例文件。'; } }
+};
+$('template-transfer-download').onclick = () => {
+  if (!templateTransfer || !$('template-transfer-code').value) return;
+  const url = URL.createObjectURL(new Blob([$('template-transfer-code').value], { type: 'text/plain;charset=utf-8' }));
+  const link = document.createElement('a'); link.href = url; link.download = `${templateTransfer.name.replace(/[\x00-\x1f\x7f/\\:*?"<>|]/g, '_').slice(0, 80)}.blueflow`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+};
+$('template-transfer-upload').onclick = () => $('template-transfer-file').click();
+$('template-transfer-file').onchange = async () => {
+  const file = $('template-transfer-file').files[0], context = templateTransfer; $('template-transfer-file').value = ''; if (!file || !context) return;
+  if (file.size > 22 * 1024 * 1024) { $('template-transfer-error').textContent = '示例文件最大22MB'; return; }
+  try { const code = await file.text(); if (context === templateTransfer) $('template-transfer-code').value = code; }
+  catch { if (context === templateTransfer) $('template-transfer-error').textContent = '无法读取文件，请重试'; }
+};
+$('template-transfer-import').onclick = async () => {
+  const context = templateTransfer; if (!context || context.mode !== 'import') return;
+  $('template-transfer-import').disabled = true; $('template-transfer-error').textContent = '';
+  try {
+    const result = await api('/api/admin/templates/import', { method: 'POST', body: JSON.stringify({ code: $('template-transfer-code').value }) });
+    if (context !== templateTransfer || context.epoch !== authEpoch || context.owner !== me?.id) return;
+    closeTemplateTransfer(); await loadTransferTemplates(); window.dispatchEvent(new Event('templates-transferred')); notice(`已导入示例：${result.template.name}`);
+  } catch (error) { if (context === templateTransfer) { $('template-transfer-error').textContent = error.message; $('template-transfer-import').disabled = false; } }
+};
+window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') { closeTemplateTransfer(); $('admin-transfer-template').replaceChildren(); } });

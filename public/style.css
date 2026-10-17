@@ -13,3 +13,5 @@ html,body{height:100%;overscroll-behavior:none}body:has(#workspace:not([hidden])
 .message-receipt{display:inline-block;margin-left:6px;font-size:13px;color:#7d8e81;letter-spacing:-2px;white-space:nowrap}.message-receipt.read{color:#269bd2}.message-receipt.failed{color:#c34d42;letter-spacing:0;font-size:11px}
 
 #number-activation-form label{margin:14px 0}#number-activation-form input{display:block;width:100%;margin-top:7px}#number-activation-form p{font-size:12px;line-height:1.8;margin:14px 0}#number-activation-error{color:#b84b42}#number-activation-form button{margin:5px 4px 0 0}
+
+#template-transfer-code{width:100%;margin-top:8px;resize:vertical;font-family:monospace;font-size:11px}#template-transfer-error{color:#b84b42}#template-transfer-help{font-size:12px;line-height:1.8}

@@ -305,3 +305,29 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     assert.deepEqual(Buffer.from(await (await restoredBob.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).arrayBuffer()), file);
   } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
 });
+
+test('admin exports image-bearing templates and imports into a different server without a WhatsApp account', { timeout: 30000 }, async () => {
+  const sourceDir = await mkdtemp(path.join(tmpdir(), 'blue-template-source-')), targetDir = await mkdtemp(path.join(tmpdir(), 'blue-template-target-'));
+  const source = await launch(sourceDir), target = await launch(targetDir);
+  try {
+    const seller = client(source.base), receiver = client(target.base), anonymous = client(target.base);
+    for (const admin of [seller, receiver]) await admin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    const src = new Store(sourceDir), filename = '1234567890abcdef1234567890abcdef.png';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9v8AAAAASUVORK5CYII=', 'base64');
+    const { mkdir, writeFile, readFile } = await import('node:fs/promises');
+    await mkdir(path.join(sourceDir, 'template-media')); await writeFile(path.join(sourceDir, 'template-media', filename), png);
+    const row = src.db.prepare('SELECT config FROM flow_templates WHERE id=?').get('builtin-1'); const config = JSON.parse(row.config); config.nodes[0].image = filename;
+    src.db.prepare('UPDATE flow_templates SET name=?,config=? WHERE id=?').run('跨服务器示例', JSON.stringify(config), 'builtin-1'); src.close();
+    const exported = await seller.request('/api/admin/templates/builtin-1/export'); assert.equal(exported.status, 200); const pack = await exported.json();
+    assert.equal((await anonymous.request('/api/admin/templates/import', { method: 'POST', body: { code: pack.code } })).status, 401);
+    await anonymous.request('/api/auth/register', { method: 'POST', body: credentials('ordinary-importer') }); await anonymous.request('/api/auth/login', { method: 'POST', body: credentials('ordinary-importer') });
+    assert.equal((await anonymous.request('/api/admin/templates/import', { method: 'POST', body: { code: pack.code } })).status, 403);
+    assert.equal((await receiver.request('/api/admin/templates/import', { method: 'POST', body: { code: 'broken' } })).status, 400);
+    const imported = await receiver.request('/api/admin/templates/import', { method: 'POST', body: { code: pack.code } }); assert.equal(imported.status, 201); const { template } = await imported.json();
+    assert.notEqual(template.id, 'builtin-1'); assert.equal(template.name, '跨服务器示例');
+    const dst = new Store(targetDir); const saved = JSON.parse(dst.db.prepare('SELECT config FROM flow_templates WHERE id=?').get(template.id).config);
+    assert.deepEqual(saved.nodes[0].options, config.nodes[0].options); assert.notEqual(saved.nodes[0].image, filename); assert.equal(saved.enabled, false);
+    assert.deepEqual(await readFile(path.join(targetDir, 'template-media', saved.nodes[0].image)), png); assert.equal(dst.db.prepare('SELECT COUNT(*) AS n FROM accounts').get().n, 0); dst.close();
+    assert.equal((await receiver.request(`/api/admin/templates/${template.id}/export`)).status, 200);
+  } finally { await source.stop(); await target.stop(); await rm(sourceDir, { recursive: true }); await rm(targetDir, { recursive: true }); }
+});

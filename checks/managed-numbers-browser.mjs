@@ -25,6 +25,26 @@ try {
   async function login(p, name) { await p.goto(base); await p.type('#username', name); await p.type('#password', '123456'); await p.click('#auth-submit'); await p.waitForFunction(() => !document.getElementById('workspace').hidden); }
   await login(page, 'pool-admin'); await page.click('#nav-admin');
   await page.waitForSelector('#admin-users input[type=number]');
+  // Template transfer works before the administrator owns any WhatsApp number.
+  await page.waitForSelector('#admin-transfer-template option');
+  await page.click('#admin-template-export'); await page.waitForSelector('#template-transfer-dialog[open]');
+  await page.waitForFunction(() => document.getElementById('template-transfer-code').value.startsWith('BLUEFLOW1.'));
+  const portableCode = await page.$eval('#template-transfer-code', el => el.value);
+  assert.equal(await page.$eval('#template-transfer-code', el => el.readOnly), true);
+  assert.equal(await page.$eval('#template-transfer-download', el => el.disabled), false);
+  await page.click('#template-transfer-close'); await page.click('#admin-template-import');
+  await page.type('#template-transfer-code', 'invalid'); await page.click('#template-transfer-import');
+  await page.waitForFunction(() => document.getElementById('template-transfer-error').textContent.includes('格式无效'));
+  await page.evaluate(code => {
+    const files = new DataTransfer(); files.items.add(new File([code], 'example.blueflow', { type: 'text/plain' }));
+    const input = document.getElementById('template-transfer-file'); input.files = files.files; input.dispatchEvent(new Event('change'));
+  }, portableCode);
+  await page.waitForFunction(code => document.getElementById('template-transfer-code').value === code, {}, portableCode);
+  const importedResponse = page.waitForResponse(r => r.url().endsWith('/api/admin/templates/import') && r.request().method() === 'POST');
+  await page.click('#template-transfer-import'); assert.equal((await importedResponse).status(), 201);
+  await page.waitForFunction(() => !document.getElementById('template-transfer-dialog').open && document.querySelectorAll('#admin-transfer-template option').length === 3);
+  assert.equal(store.accounts(admin.id).length, 0);
+
   await page.$eval('#admin-users input[type=number]', el => { el.value = '3'; });
   const saved = page.waitForResponse(r => r.url().endsWith(`/api/admin/users/${user.id}`) && r.request().method() === 'PATCH');
   await page.click('#admin-users button[type=submit]'); assert.equal((await saved).status(), 200);

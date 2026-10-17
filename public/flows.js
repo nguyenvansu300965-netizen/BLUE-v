@@ -85,7 +85,7 @@
   }
   function templateControls() {
     const admin = Boolean(base && window.isSuperAdmin());
-    for (const id of ['template-new', 'template-update', 'template-delete', 'template-use']) el(id).hidden = !admin;
+    for (const id of ['template-new', 'template-update', 'template-delete', 'template-use', 'template-export-code', 'template-import-code']) el(id).hidden = !admin;
     const unavailable = !base || !ready || busy, missing = !el('flow-template').value;
     for (const id of ['flow-save', 'flow-add', 'flow-mode', 'flow-template', 'template-new', 'template-exit']) el(id).disabled = unavailable;
     el('flow-nodes').inert = unavailable;
@@ -102,6 +102,9 @@
     if (editorTemplate) el('template-editor-title').textContent = `公共示例：${editorTemplate.name} · v${editorTemplate.revision}`;
   }
   el('flow-template').onchange = templateControls;
+  el('template-export-code').onclick = () => window.openTemplateExport(el('flow-template').value);
+  el('template-import-code').onclick = () => window.openTemplateImport();
+  window.addEventListener('templates-transferred', () => { if (base) void loadTemplates().catch(error => status(error.message)); });
   async function loadExample(editShared) {
     if (!base || !ready || busy || (config.nodes.length && !confirm('载入示例将替换当前编辑内容，是否继续？'))) return;
     const version = ++loadVersion, selected = el('flow-template').value, loadBase = base;
