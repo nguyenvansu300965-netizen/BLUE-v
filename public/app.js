@@ -430,7 +430,7 @@ function cancelRecording() {
   voiceStream?.getTracks().forEach(track => track.stop()); voiceStream = null; voiceRecorder = null;
   $('record-voice').textContent = '🎙'; $('record-voice').setAttribute('aria-label', '录制语音');
 }
-window.addEventListener('account-changed', () => { cancelRecording(); closeForward(); });
+window.addEventListener('account-changed', () => { cancelRecording(); closeForward(); $('microphone-dialog').close(); $('voice-file').value = ''; });
 $('send-video').onclick = () => { if (!connected || !selectedThread || sending) return notice('请先连接号码并选择聊天'); $('video-file').click(); };
 $('video-file').onchange = () => {
   const file = $('video-file').files[0]; $('video-file').value = '';
@@ -442,7 +442,7 @@ $('video-file').onchange = () => {
 $('record-voice').onclick = async () => {
   if (voiceRecorder?.state === 'recording') { voiceRecorder.stop(); return; }
   if (!connected || !selectedThread || sending) return notice('请先连接号码并选择聊天');
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return notice('此浏览器不支持录音，请使用 HTTPS 下的 Chrome 或 Edge');
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return showMicrophoneError({ name: 'UnsupportedError' });
   clearAttachment(); const token = recordingToken, epoch = authEpoch, account = selectedAccount, thread = selectedThread;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -465,6 +465,34 @@ $('record-voice').onclick = async () => {
     };
     recorder.start(1000); $('record-voice').textContent = '■'; $('record-voice').setAttribute('aria-label', '停止录音');
     notice('正在录音，点击 ■ 停止；停止后点击发送'); voiceTimer = setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 5 * 60 * 1000);
-  } catch (error) { if (token === recordingToken) { cancelRecording(); notice(error.name === 'NotAllowedError' ? '请允许浏览器使用麦克风' : error.message); } }
+  } catch (error) { if (token === recordingToken) { cancelRecording(); showMicrophoneError(error); } }
 };
 window.addEventListener('pagehide', cancelRecording);
+
+function showMicrophoneError(error) {
+  const hints = {
+    NotFoundError: '未找到可用的麦克风。请连接耳麦或启用系统中的麦克风输入设备后重试。',
+    DevicesNotFoundError: '未找到可用的麦克风。请连接耳麦或启用系统中的麦克风输入设备后重试。',
+    NotAllowedError: '麦克风访问被拒绝。请在浏览器网站设置及系统隐私设置中允许麦克风。',
+    PermissionDeniedError: '麦克风访问被拒绝。请在浏览器网站设置及系统隐私设置中允许麦克风。',
+    NotReadableError: '麦克风无法读取，可能被其他程序占用或设备发生故障。请检查后重试。',
+    TrackStartError: '麦克风无法读取，可能被其他程序占用或设备发生故障。请检查后重试。',
+    OverconstrainedError: '当前麦克风不满足浏览器要求，请更换系统默认输入设备后重试。',
+    SecurityError: '浏览器安全设置阻止了录音，请使用 HTTPS 并检查麦克风权限。',
+    UnsupportedError: '此浏览器或页面不支持录音，请使用 HTTPS 下的 Chrome、Edge 或 Safari，也可上传语音文件。'
+  };
+  $('microphone-error').textContent = hints[error.name] || '无法开始录音，请检查麦克风和浏览器权限，或上传已有语音文件。';
+  $('microphone-dialog').showModal();
+}
+$('microphone-close').onclick = () => $('microphone-dialog').close();
+$('microphone-retry').onclick = () => { $('microphone-dialog').close(); $('record-voice').click(); };
+$('voice-upload').onclick = () => $('voice-file').click();
+$('voice-file').onchange = () => {
+  const file = $('voice-file').files[0]; $('voice-file').value = '';
+  if (!file || !connected || !selectedThread || sending) return;
+  const extensions = { ogg: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav' };
+  const type = file.type.split(';')[0] || extensions[file.name.split('.').pop().toLowerCase()];
+  if (!['audio/ogg', 'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(type) || !file.size || file.size > 20 * 1024 * 1024) { $('microphone-error').textContent = '请选择 OGG、WebM、M4A、MP3 或 WAV 音频文件，最大 20MB。'; return; }
+  clearAttachment(); attachmentDraft = { file: new File([file], file.name, { type }), voice: true, uploaded: null };
+  $('attachment-draft').textContent = `语音：${file.name}，点击发送`; $('attachment-draft').hidden = false; $('clear-attachment').hidden = false; $('microphone-dialog').close();
+};

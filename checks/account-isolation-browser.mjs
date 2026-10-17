@@ -127,6 +127,22 @@ try {
     renderState({ ...state, status: 'connected', user: { id: '123456789@s.whatsapp.net' }, messages: [incoming, { ...incoming, id: 'outgoing-action', outgoing: true, text: 'Own outgoing', media: undefined }] });
   }, { id: created.id, incoming });
   await page.click('.chat-item');
+  await page.evaluate(() => {
+    window.realGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Requested device not found', 'NotFoundError'); };
+  });
+  await page.click('#record-voice');
+  await page.waitForSelector('#microphone-dialog[open]');
+  assert.match(await page.$eval('#microphone-error', el => el.textContent), /未找到可用的麦克风/);
+  assert.equal(await page.evaluate(() => voiceRecorder), null);
+  await page.evaluate(() => {
+    const files = new DataTransfer(); files.items.add(new File(['audio-fixture'], 'voice.mp3', { type: 'audio/mpeg' }));
+    document.getElementById('voice-file').files = files.files; document.getElementById('voice-file').dispatchEvent(new Event('change'));
+  });
+  assert.equal(await page.evaluate(() => attachmentDraft.voice), true);
+  assert.equal(await page.evaluate(() => attachmentDraft.file.type), 'audio/mpeg');
+  assert.equal(await page.$eval('#microphone-dialog', el => el.open), false);
+  await page.evaluate(() => { clearAttachment(); navigator.mediaDevices.getUserMedia = window.realGetUserMedia; });
   await page.click('#record-voice');
   await page.waitForFunction(() => document.getElementById('record-voice').getAttribute('aria-label') === '停止录音');
   await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1200)));
