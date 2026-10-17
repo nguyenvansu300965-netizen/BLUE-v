@@ -94,6 +94,47 @@ app.use('/api', (req, res, next) => {
 app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); setCookie(res, '', 0); reconcile(); res.json({ ok: true }); });
 app.get('/api/auth/me', (req, res) => res.json({ user: store.publicUser(req.user), plans }));
 app.use('/api/admin', (req, res, next) => { if (req.user.role !== 'admin') throw new AppError(403, '仅超级管理员可操作'); next(); });
+const poolView = account => {
+  const rt = runtimes.get(account.id);
+  return { id: account.id, label: account.label, managed: account.managed, userId: account.managed === 2 ? account.user_id : null, username: account.managed === 2 ? store.user(account.user_id)?.username : null, status: rt?.state.status || 'idle', number: rt?.state.user?.phoneNumber || '', allowed: store.allowed(account) };
+};
+app.get('/api/admin/numbers', (req, res) => res.json({ accounts: store.managedAccounts().map(poolView) }));
+app.post('/api/admin/numbers', (req, res) => res.status(201).json({ account: poolView(store.createManaged(req.user.id, req.body?.label)) }));
+app.get('/api/admin/numbers/:id/state', async (req, res) => {
+  const account = store.account(req.params.id); if (!account?.managed) throw new AppError(404, '托管号码不存在');
+  const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed === 1 ? rt.state.qr : null, error: rt.state.error, progress: rt.state.progress });
+});
+app.post('/api/admin/numbers/:id/connect', async (req, res) => {
+  const account = store.account(req.params.id); if (account?.managed !== 1) throw new AppError(400, '请先收回号码再管理连接');
+  const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
+  void rt.connect().catch(() => {}); res.status(202).json({ ok: true });
+});
+app.delete('/api/admin/numbers/:id', async (req, res) => {
+  const account = store.account(req.params.id); if (account?.managed !== 1) throw new AppError(400, '请先收回号码再删除');
+  const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
+  rt.handover = true;
+  try { await rt.stop(); await rm(rt.dir, { recursive: true, force: true }); store.deleteAccount(account.id); runtimes.delete(account.id); }
+  finally { rt.handover = false; }
+  res.json({ ok: true });
+});
+app.patch('/api/admin/numbers/:id/assignment', async (req, res) => {
+  const account = store.account(req.params.id); if (!account?.managed) throw new AppError(404, '托管号码不存在');
+  const target = req.body?.userId; if (target !== null && typeof target !== 'string') throw new AppError(400, '请选择用户或收回号码');
+  const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
+  rt.handover = true;
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { rt.drain = null; reject(new AppError(409, '号码操作尚未结束，请稍后分配')); }, 15000);
+      rt.drain = () => { if (!rt.activeRequests) { clearTimeout(timer); rt.drain = null; resolve(); } }; rt.drain();
+    });
+    let queueTimer;
+    try { await Promise.race([rt.automation.queue, new Promise((_, reject) => { queueTimer = setTimeout(() => reject(new AppError(409, '自动回复尚未结束，请稍后分配')), 15000); })]); } finally { clearTimeout(queueTimer); }
+    // Existing operations finish before access changes; the Chromium connection stays alive.
+    const updated = store.assignAccount(req.user.id, account.id, target);
+    rt.account = updated; rt.automation.configure(rt.config); rt.broadcast(); reconcile();
+    res.json({ account: poolView(updated) });
+  } finally { rt.handover = false; }
+});
 app.get('/api/admin/users', (req, res) => res.json({ users: store.users(), plans, audit: store.audit() }));
 app.patch('/api/admin/users/:id', (req, res) => {
   const user = store.grant(req.user.id, req.params.id, req.body);
@@ -132,17 +173,24 @@ app.post('/api/admin/users/:id/password', async (req, res) => {
   res.json({ ok: true, ...(reset ? { password } : {}) });
 });
 app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.phoneNumber || '' })), user: store.publicUser(req.user) }));
-app.post('/api/accounts', (req, res) => res.status(201).json({ account: store.createAccount(req.user.id, req.body?.label) }));
+app.post('/api/accounts', (req, res) => { throw new AppError(403, req.user.role === 'admin' ? '请在托管号码管理中添加并分配号码' : '请联系管理员分配号码，已有自有号码可继续使用'); });
 app.use('/api/accounts/:id', async (req, res, next) => {
   const account = store.account(req.params.id);
-  if (!account || account.user_id !== req.user.id) throw new AppError(404, '号码不存在');
+  if (!account || !store.canAccess(req.user.id, account)) throw new AppError(404, '号码不存在');
   req.account = account;
   if (!(req.method === 'DELETE' && req.path === '/') && !store.allowed(account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
   req.runtime = await runtime(account);
+  if (req.runtime.handover) throw new AppError(409, '号码正在分配，请稍后重试');
+  if (req.path !== '/events') {
+    req.runtime.activeRequests = (req.runtime.activeRequests || 0) + 1;
+    let done = false; const release = () => { if (!done) { done = true; req.runtime.activeRequests--; req.runtime.drain?.(); } };
+    res.once('finish', release); res.once('close', release);
+  }
   next();
 });
 const accountRouter = express.Router({ mergeParams: true });
 accountRouter.delete('/', async (req, res) => {
+  if (req.account.managed) throw new AppError(403, '托管号码请联系管理员收回');
   await req.runtime.stop();
   await rm(req.runtime.dir, { recursive: true, force: true });
   store.deleteAccount(req.account.id); runtimes.delete(req.account.id);
@@ -154,17 +202,18 @@ accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
   res.flushHeaders();
   const rt = req.runtime;
-  rt.clients.set(res, () => Boolean(store.session(req.sessionToken)) && store.allowed(req.account));
+  rt.clients.set(res, () => store.session(req.sessionToken)?.id === req.user.id && store.canAccess(req.user.id, req.account) && store.allowed(req.account));
   res.write(`data: ${JSON.stringify(rt.snapshot())}\n\n`);
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
   res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
 });
 accountRouter.post('/connect', async (req, res) => {
+  if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接');
   if (req.body?.restart === true) await req.runtime.stop();
   void req.runtime.connect().catch(() => req.runtime.stop('blocked'));
   res.status(202).json({ ok: true });
 });
-accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
+accountRouter.post('/logout', async (req, res) => { if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接'); await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.patch('/contacts', (req, res) => {
   const { jid, remark, readAt } = req.body || {};
   if (typeof jid !== 'string' || !store.messages(req.account.id).some(m => m.jid === jid)) throw new AppError(404, '会话不存在');
@@ -280,7 +329,7 @@ accountRouter.post('/flows', async (req, res) => {
     try { config = validateFlows(req.body); } catch (error) { throw new AppError(400, error.message); }
     for (const node of config.nodes) if (node.image) { try { await access(path.join(rt.mediaDir, node.image)); } catch { throw new AppError(400, '请先为此号码上传图片'); } }
     await saveFlows(rt.flowFile, config);
-    if (!store.allowed(req.account)) throw new AppError(403, '订阅权限已变更');
+    if (!store.canAccess(req.user.id, req.account) || !store.allowed(req.account)) throw new AppError(403, '订阅权限已变更');
     rt.config = config; rt.automation.configure(config); rt.broadcast(); res.json({ ok: true });
   } finally { rt.savingFlows = false; }
 });
@@ -296,10 +345,8 @@ const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || 
   if (error) { console.error(`Unable to start server: ${error.code || 'listen failed'}`); process.exit(1); }
   console.log(`BLUE-v listening on port ${server.address().port}`);
   if (process.env.AUTO_CONNECT === 'true') {
-    for (const user of store.users()) if (user.active) {
-      for (const account of store.accounts(user.id)) if (store.allowed(account)) {
-        void access(path.join(dataDir, 'tenants', user.id, account.id, 'wajs-session.json')).then(() => runtime(account)).then(rt => rt.connect()).catch(() => {});
-      }
+    for (const account of store.db.prepare('SELECT * FROM accounts').all()) if (store.allowed(account)) {
+      void access(path.join(dataDir, 'tenants', account.storage_owner_id || account.user_id, account.id, 'wajs-session.json')).then(() => runtime(account)).then(rt => rt.connect()).catch(() => {});
     }
   }
 });

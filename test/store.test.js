@@ -72,3 +72,25 @@ test('contact remarks and monotonic read markers persist per account and cascade
     store.deleteAccount(a.id); assert.deepEqual(store.contacts(a.id), []);
   } finally { store.close(); await rm(dir, { recursive: true }); }
 });
+
+
+test('legacy schema migrates without moving ownership or changing plan limits; managed profiles keep their storage owner', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-legacy-assignment-')); let store = new Store(dir); let runtime;
+  try {
+    await store.bootstrap('legacy-admin', '123456'); const admin = store.byName('legacy-admin');
+    const user = await store.createUser('legacy-customer', '123456');
+    store.grant(admin.id, user.id, { enabled: true, plan: 'pro', expiresAt: new Date(Date.now() + 86400000).toISOString() });
+    const old = store.createAccount(user.id, 'Legacy');
+    store.db.exec('ALTER TABLE users DROP COLUMN number_limit; ALTER TABLE accounts DROP COLUMN storage_owner_id; ALTER TABLE accounts DROP COLUMN managed');
+    store.close(); store = new Store(dir);
+    assert.equal(store.publicUser(store.user(user.id)).limit, 5); assert.equal(store.account(old.id).managed, 0); assert.equal(store.account(old.id).storage_owner_id, user.id);
+    assert.equal(store.canAccess(user.id, old), true);
+    const pool = store.createManaged(admin.id, 'Pooled'); runtime = await new WhatsAppAccount(pool, store, dir).init();
+    const profile = runtime.profileDir; let closed = 0; const client = { close: async () => { closed++; } }; runtime.client = client; runtime.state.status = 'connected'; runtime.state.user = { id: '123456789@s.whatsapp.net' };
+    runtime.account = store.assignAccount(admin.id, pool.id, user.id);
+    assert.equal(runtime.profileDir, profile); assert.equal(runtime.client, client); assert.equal(store.canAccess(admin.id, pool), false); assert.equal(store.canAccess(user.id, pool), true);
+    runtime.account = store.assignAccount(admin.id, pool.id, null);
+    assert.equal(store.canAccess(user.id, pool), false); assert.equal(store.allowed(pool), true); assert.equal(runtime.state.status, 'connected'); assert.equal(closed, 0);
+    assert.equal(store.canAccess(user.id, old), true, 'legacy number remains unchanged');
+  } finally { await runtime?.stop(); store.close(); await rm(dir, { recursive: true }); }
+});

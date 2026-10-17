@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { Store } from '../store.js';
+function legacyAccount(dir, userId, label) { const store = new Store(dir); try { return store.createAccount(userId, label); } finally { store.close(); } }
 import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -29,7 +31,7 @@ try {
   }
   await login(page, 'isolation-admin');
   const admin = (await request(page, '/api/auth/me')).data.user;
-  const original = (await request(page, '/api/accounts', 'POST', { label: 'Existing connected number' })).data.account;
+  const original = legacyAccount(dir, admin.id, 'Existing connected number');
   await page.reload(); await page.waitForFunction(() => document.getElementById('account-select').value.length > 0);
   // Only the old connected status is a fixture; accounts, ownership and new-number creation use the real API.
   await page.evaluate(async id => {
@@ -53,10 +55,8 @@ try {
   await page.evaluate(() => { window.oldRefreshDone = false; void refreshAccounts().finally(() => { window.oldRefreshDone = true; }); });
   for (let i = 0; !staleRequest && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(staleRequest, 'must intercept an older list refresh');
-  page.once('dialog', dialog => dialog.accept('Fresh number awaiting QR'));
-  const createdResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/accounts' && response.request().method() === 'POST');
-  await page.click('#add-account');
-  const created = (await (await createdResponse).json()).account;
+  const created = legacyAccount(dir, admin.id, 'Existing number awaiting QR');
+  await page.evaluate(id => { void refreshAccounts(id).then(applied => { if (applied) document.getElementById('device-dialog').showModal(); }); }, created.id);
   for (let i = 0; !freshRequest && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(freshRequest, 'creation must refresh the new list');
   await staleRequest.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(oldList) });
@@ -222,7 +222,7 @@ try {
   // Repeat switching with a number already owned by B, without reloading the document.
   await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
   await signInHere('isolated-user');
-  const ownedB = (await request(page, '/api/accounts', 'POST', { label: 'B own number' })).data.account;
+  const ownedB = legacyAccount(dir, registered.data.user.id, 'Existing B number');
   await page.evaluate(() => refreshAccounts());
   await page.waitForFunction(id => document.getElementById('account-select').value === id, {}, ownedB.id);
   await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
@@ -268,7 +268,7 @@ try {
   assert.match(await page.$eval('#auth-notice', element => element.textContent), /其他页面切换/);
   const otherAccounts = (await request(tab, '/api/accounts')).data.accounts;
   assert.equal(otherAccounts.length, 0, 'old tab must not create a number for a different cookie identity');
-  const other = (await request(tab, '/api/accounts', 'POST', { label: 'Independent user number' })).data.account;
+  const other = legacyAccount(dir, registered.data.user.id, 'Existing independent number');
   const forbidden = await request(tab, `/api/accounts/${original.id}/state`); assert.equal(forbidden.status, 404);
   const state = (await request(tab, `/api/accounts/${other.id}/state`)).data;
   assert.equal(state.status, 'idle'); assert.equal(state.user, null); assert.equal(state.account.user_id, registered.data.user.id);

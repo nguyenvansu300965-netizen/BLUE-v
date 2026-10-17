@@ -55,7 +55,8 @@ function updateMembership(user) {
   $('subscription-badge').textContent = user.role === 'admin' ? '超级管理员' : planNames[user.plan];
   $('subscription-bar').classList.toggle('pending', !user.active);
   $('subscription-bar').textContent = user.role === 'admin' ? '超级管理员 · 在管理后台为用户开通套餐和订阅' : user.active ? `${planNames[user.plan]} · 最多 ${user.limit} 个号码 · 有效期至 ${new Date(user.expiresAt).toLocaleString()}` : '账号待开通、已停用或订阅已到期，请联系超级管理员开通使用权限。';
-  $('add-account').disabled = !user.active || accounts.length >= user.limit;
+  $('add-account').hidden = user.role !== 'admin';
+  $('add-account').disabled = user.role !== 'admin';
   $('quota').textContent = `${accounts.length} / ${user.limit} 个号码`;
 }
 async function refreshAccounts(preferredId) {
@@ -77,7 +78,10 @@ async function refreshAccounts(preferredId) {
   select.value = selectedAccount;
   $('open-device').disabled = !selectedAccount;
   // Excess accounts can still be removed from the list using the delete action.
-  $('remove-account').disabled = !accounts.length;
+  const currentAccount = accounts.find(a => a.id === selectedAccount);
+  $('remove-account').disabled = !accounts.length || Boolean(currentAccount?.managed);
+  $('open-device').hidden = Boolean(currentAccount?.managed);
+  $('remove-account').hidden = Boolean(currentAccount?.managed);
   return true;
 }
 async function enter(user) {
@@ -86,6 +90,8 @@ async function enter(user) {
   await refreshAccounts();
 }
 function switchAccount() {
+  const managed = Boolean(accounts.find(a => a.id === selectedAccount)?.managed);
+  $('open-device').hidden = managed; $('remove-account').hidden = managed;
   resetChatExtras();
   $('self-number').hidden = true; $('self-number').textContent = '';
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
@@ -104,6 +110,7 @@ function switchAccount() {
 function renderState(state) {
   if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;
   if (state.status === 'connected' && !/^[0-9]+@(s\.whatsapp\.net|c\.us|lid)$/.test(state.user?.id || '')) state = { ...state, status: 'connecting', user: null, progress: '正在核实 WhatsApp 登录身份，尚未取得当前号码…' };
+  $('open-device').hidden = Boolean(state.account.managed); $('remove-account').hidden = Boolean(state.account.managed);
   connectionStatus = state.status;
   const oldIds = new Set(messages.map(m => m.id));
   const newMessages = (state.messages || []).filter(m => !oldIds.has(m.id) && !m.outgoing && !m.revoked && m.time > Date.now() - 120000);
@@ -283,20 +290,7 @@ $('auth-form').onsubmit = async event => {
 };
 $('signout').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); showAuth(); } catch (error) { notice(error.message); } };
 $('account-select').onchange = () => { selectedAccount = $('account-select').value; switchAccount(); };
-$('add-account').onclick = async () => {
-  if (creatingAccount || !me) return;
-  const label = prompt('请输入此 WhatsApp 号码的备注名称'); if (!label) return;
-  const epoch = authEpoch, owner = me.id;
-  creatingAccount = true; accountsRequest++; $('add-account').disabled = true; $('account-select').disabled = true;
-  try {
-    const result = await api('/api/accounts', { method: 'POST', body: JSON.stringify({ label }) });
-    if (epoch !== authEpoch || owner !== me?.id) return;
-    if (result.account.user_id !== owner) throw new Error('号码归属不匹配，请重新登录');
-    const applied = await refreshAccounts(result.account.id);
-    if (applied && epoch === authEpoch && selectedAccount === result.account.id) $('device-dialog').showModal();
-  } catch (error) { if (epoch === authEpoch) notice(error.message); }
-  finally { if (epoch === authEpoch) { creatingAccount = false; $('account-select').disabled = false; if (me) updateMembership(me); } }
-};
+$('add-account').onclick = () => { if (me?.role === 'admin') { showPage('admin'); $('admin-add-number').click(); } };
 $('remove-account').onclick = async () => {
   let choice = selectedAccount || accounts[0]?.id;
   if (accounts.length > 1) {
@@ -387,7 +381,7 @@ async function loadAdmin() {
   const epoch = authEpoch;
   try {
     const result = await api('/api/admin/users');
-    if (epoch !== authEpoch || me?.role !== 'admin') return; $('admin-users').replaceChildren();
+    if (epoch !== authEpoch || me?.role !== 'admin') return; void loadNumberPool(result.users); $('admin-users').replaceChildren();
     for (const user of result.users) {
       const form = document.createElement('form'); form.className = 'admin-user';
       const name = document.createElement('div'); name.className = 'user-name';
@@ -405,14 +399,16 @@ async function loadAdmin() {
       const plan = document.createElement('select');
       for (const [key, value] of Object.entries(result.plans)) { const option = document.createElement('option'); option.value = key; option.textContent = `${value.name} · ${value.limit} 个号码`; plan.append(option); }
       plan.value = user.plan;
+      const limit = document.createElement('input'); limit.type = 'number'; limit.min = '0'; limit.max = '1000'; limit.step = '1'; limit.required = true; limit.value = user.limit;
+      const limitLabel = document.createElement('label'); limitLabel.textContent = '可用号码数量（含已有自有号码）'; limitLabel.append(limit);
       const date = document.createElement('input'); date.type = 'datetime-local'; date.value = localDate(user.expiresAt || Date.now() + 30 * 86400000); date.required = true;
       const dateLabel = document.createElement('label'); dateLabel.textContent = '订阅到期时间（本地时间）'; dateLabel.append(date);
       const button = document.createElement('button'); button.type = 'submit'; button.textContent = '保存授权';
-      form.append(enabledLabel, plan, dateLabel, button);
+      form.append(enabledLabel, plan, limitLabel, dateLabel, button);
       form.onsubmit = async event => {
         event.preventDefault(); button.disabled = true;
         try {
-          await api(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: enabled.checked, plan: plan.value, expiresAt: date.value ? new Date(date.value).toISOString() : null }) });
+          await api(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: enabled.checked, plan: plan.value, limit: Number(limit.value), expiresAt: date.value ? new Date(date.value).toISOString() : null }) });
           $('admin-notice').textContent = `已更新 ${user.username} 的使用权限和订阅`; await loadAdmin();
         } catch (error) { $('admin-notice').textContent = error.message; }
         finally { button.disabled = false; }
@@ -422,7 +418,7 @@ async function loadAdmin() {
     $('admin-audit').replaceChildren(...result.audit.map(entry => {
       const div = document.createElement('div'); div.className = 'audit-entry';
       if (entry.action === 'password_change' || entry.action === 'password_reset') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${entry.action === 'password_reset' ? '随机重置密码' : '修改密码'}`; return div; }
-      const detail = JSON.parse(entry.detail); div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${planNames[detail.plan]} · ${detail.enabled ? '开通 / 更新' : '停用'}${detail.expiresAt ? ` · 到期 ${new Date(detail.expiresAt).toLocaleString()}` : ''}`; return div;
+      const detail = JSON.parse(entry.detail); if (entry.action === 'number_assignment') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · 号码分配 · ${detail.accountId} · ${detail.userId ? entry.target_name : '已收回'}`; return div; } div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${planNames[detail.plan]}${detail.limit !== null && detail.limit !== undefined ? ` · ${detail.limit}个号码` : ''} · ${detail.enabled ? '开通 / 更新' : '停用'}${detail.expiresAt ? ` · 到期 ${new Date(detail.expiresAt).toLocaleString()}` : ''}`; return div;
     }));
   } catch (error) { $('admin-notice').textContent = error.message; }
 }
@@ -591,3 +587,57 @@ function receiptIndicator(message) {
 }
 $('receipt-help').onclick = event => { event.stopPropagation(); $('receipt-dialog').showModal(); };
 $('receipt-close').onclick = () => $('receipt-dialog').close();
+
+let poolUsers = [], poolDialogId = '', poolPoll = null;
+async function loadNumberPool(users = poolUsers) {
+  poolUsers = users; const epoch = authEpoch;
+  try {
+    const result = await api('/api/admin/numbers'); if (epoch !== authEpoch || me?.role !== 'admin') return;
+    $('admin-numbers').replaceChildren();
+    if (!result.accounts.length) $('admin-numbers').textContent = '暂无托管号码。已有用户自有号码保持原样，不进入此列表。';
+    for (const item of result.accounts) {
+      const row = document.createElement('div'); row.className = 'admin-user';
+      const info = document.createElement('div'); info.className = 'user-name';
+      const label = document.createElement('strong'); label.textContent = `${item.label}${item.number ? ` · +${item.number}` : ''}`;
+      const detail = document.createElement('small'); detail.textContent = `${statusNames[item.status] || item.status} · ${item.username || '待分配'}${!item.allowed ? ' · 订阅或配额受限' : ''}`; info.append(label, detail); row.append(info);
+      const select = document.createElement('select'); select.add(new Option('待分配 / 收回', ''));
+      for (const user of poolUsers.filter(u => u.role !== 'admin')) { const option = new Option(`${user.username} · ${user.accountCount}/${user.limit}${user.active ? '' : ' · 订阅无效'}`, user.id); option.disabled = !user.active && user.id !== item.userId; select.add(option); }
+      select.value = item.userId || ''; row.append(select);
+      const save = document.createElement('button'); save.textContent = '保存分配'; save.type = 'button';
+      save.onclick = async () => {
+        if (item.userId !== (select.value || null) && !confirm('变更号码使用人？原用户立即失去访问权限，新用户可查看该号码已有聊天记录和流程。')) return;
+        save.disabled = true;
+        try { await api(`/api/admin/numbers/${item.id}/assignment`, { method: 'PATCH', body: JSON.stringify({ userId: select.value || null }) }); await loadAdmin(); await refreshAccounts(); }
+        catch (error) { notice(error.message); save.disabled = false; }
+      }; row.append(save);
+      if (item.managed === 1) {
+        const connect = document.createElement('button'); connect.type = 'button'; connect.className = 'outline'; connect.textContent = '扫码 / 连接状态'; connect.onclick = () => openPoolDevice(item); row.append(connect);
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet danger'; remove.textContent = '删除';
+        remove.onclick = async () => { if (!confirm('删除此待分配号码及其本地记录？')) return; try { await api(`/api/admin/numbers/${item.id}`, { method: 'DELETE' }); await loadNumberPool(); } catch (error) { notice(error.message); } }; row.append(remove);
+      }
+      $('admin-numbers').append(row);
+    }
+  } catch (error) { if (epoch === authEpoch) $('admin-number-notice').textContent = error.message; }
+}
+$('admin-add-number').onclick = async () => {
+  const label = prompt('新托管号码备注'); if (label === null) return;
+  try { const { account } = await api('/api/admin/numbers', { method: 'POST', body: JSON.stringify({ label }) }); await loadNumberPool(); openPoolDevice(account); }
+  catch (error) { notice(error.message); }
+};
+function closePoolDevice() { poolDialogId = ''; clearTimeout(poolPoll); $('pool-device-dialog').close(); $('pool-qr').removeAttribute('src'); $('pool-qr').hidden = true; }
+function openPoolDevice(item) { closePoolDevice(); poolDialogId = item.id; $('pool-device-status').textContent = '正在读取连接状态…'; $('pool-connect').disabled = true; $('pool-device-title').textContent = item.label; $('pool-device-dialog').showModal(); void refreshPoolDevice(); }
+async function refreshPoolDevice() {
+  const id = poolDialogId, epoch = authEpoch; if (!id || me?.role !== 'admin') return;
+  try {
+    const state = await api(`/api/admin/numbers/${id}/state`); if (id !== poolDialogId || epoch !== authEpoch) return;
+    $('pool-qr').hidden = !state.qr; if (state.qr) $('pool-qr').src = state.qr;
+    $('pool-device-status').textContent = `${statusNames[state.status] || state.status}${state.number ? ` · +${state.number}` : ''}${state.error ? ` · ${state.error}` : ''}`;
+    $('pool-connect').disabled = state.status === 'connected' || state.status === 'connecting' || state.status === 'qr' || state.managed !== 1;
+  } catch (error) { if (id === poolDialogId && epoch === authEpoch) $('pool-device-status').textContent = error.message; }
+  if (id === poolDialogId && epoch === authEpoch) poolPoll = setTimeout(refreshPoolDevice, 1500);
+}
+$('pool-device-close').onclick = closePoolDevice;
+$('pool-device-dialog').addEventListener('cancel', closePoolDevice);
+$('pool-connect').onclick = async () => { const id = poolDialogId; if (!id) return; try { await api(`/api/admin/numbers/${id}/connect`, { method: 'POST' }); } catch (error) { $('pool-device-status').textContent = error.message; } };
+window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') { closePoolDevice(); poolUsers = []; $('admin-numbers').replaceChildren(); $('admin-number-notice').textContent = ''; } });
+setInterval(() => { if (me?.role === 'admin' && !$('page-admin').hidden && !$('admin-numbers').contains(document.activeElement)) void loadNumberPool(); }, 15000);

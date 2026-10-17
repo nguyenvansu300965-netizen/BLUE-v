@@ -5,6 +5,8 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Store } from '../store.js';
+function legacyAccount(dir, user, label) { const store = new Store(dir); try { return store.createAccount(user, label); } finally { store.close(); } }
 
 const origin = 'https://blue.example';
 async function launch(dataDir) {
@@ -58,10 +60,10 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: grant('basic') });
     await admin.request(`/api/admin/users/${bobUser.id}`, { method: 'PATCH', body: grant('basic') });
     const creates = await Promise.all([alice.request('/api/accounts', { method: 'POST', body: { label: 'Alice 1' } }), alice.request('/api/accounts', { method: 'POST', body: { label: 'Alice 2' } })]);
-    assert.deepEqual(creates.map(r => r.status).sort(), [201, 409]);
-    const account = (await creates.find(r => r.status === 201).json()).account;
+    assert.deepEqual(creates.map(r => r.status).sort(), [403, 403]);
+    const account = legacyAccount(dataDir, aliceUser.id, 'Existing Alice');
     const base = `/api/accounts/${account.id}`;
-    const bobAccount = (await (await bob.request('/api/accounts', { method: 'POST', body: { label: 'Bob' } })).json()).account;
+    const bobAccount = legacyAccount(dataDir, bobUser.id, 'Existing Bob');
     assert.equal((await bob.request(`${base}/state`)).status, 404);
     assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
     assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
@@ -107,7 +109,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal(templates.length, 2);
     assert.equal((await alice.request(`${base}/templates`, { method: 'POST', body: { name: 'Denied', config: flow } })).status, 403);
     assert.equal((await alice.request(`/api/admin/templates/${templates[0].id}`, { method: 'DELETE' })).status, 403);
-    const adminAccount = (await (await admin.request('/api/accounts', { method: 'POST', body: { label: 'Template editor' } })).json()).account;
+    const adminId = (await (await admin.request('/api/auth/me')).json()).user.id;
+    const adminAccount = legacyAccount(dataDir, adminId, 'Existing template editor');
     const adminBase = `/api/accounts/${adminAccount.id}`;
     const adminAsset = (await (await admin.request(`${adminBase}/media`, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: image })).json()).id;
     assert.equal((await admin.request(`/api/admin/templates/${templates[1].id}`, { method: 'DELETE' })).status, 200);
@@ -132,8 +135,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.deepEqual(await (await alice.request(`${base}/flows`)).json(), flow, 'loading a template must not alter another account');
     for (const [plan, limit] of [['pro', 5], ['vip', 10]]) {
       await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: grant(plan) });
-      while ((await (await alice.request('/api/accounts')).json()).accounts.length < limit) assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: `Extra ${plan}` } })).status, 201);
-      assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'Overflow' } })).status, 409);
+      while ((await (await alice.request('/api/accounts')).json()).accounts.length < limit) legacyAccount(dataDir, aliceUser.id, `Existing ${plan}`);
+      assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'Overflow' } })).status, 403);
     }
     const controller = new AbortController();
     const stream = await alice.request(`${base}/events`, { signal: controller.signal });
@@ -194,7 +197,7 @@ test('six-character passwords, admin password changes/reset and isolated media u
     await admin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
     assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: '123456' } })).status, 200);
     await admin.request(`/api/admin/users/${uid}`, { method: 'PATCH', body: grant('basic') });
-    const account = (await (await user.request('/api/accounts', { method: 'POST', body: { label: 'Media' } })).json()).account;
+    const account = legacyAccount(dataDir, uid, 'Existing media');
     const base = `/api/accounts/${account.id}`;
     const file = Buffer.from('%PDF-1.4\ntest attachment');
     const uploaded = await user.request(`${base}/attachments?${new URLSearchParams({ mime: 'application/pdf', name: '报价单.pdf' })}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
@@ -228,12 +231,65 @@ test('six-character passwords, admin password changes/reset and isolated media u
     const otherUser = (await (await anonymous.request('/api/auth/register', { method: 'POST', body: { username: 'media-other', password: '654321' } })).json()).user;
     await admin.request(`/api/admin/users/${otherUser.id}`, { method: 'PATCH', body: grant('basic') });
     await other.request('/api/auth/login', { method: 'POST', body: { username: 'media-other', password: '654321' } });
-    const otherAccount = (await (await other.request('/api/accounts', { method: 'POST', body: { label: 'Other' } })).json()).account;
+    const otherAccount = legacyAccount(dataDir, otherUser.id, 'Existing other');
     assert.equal((await other.request(`${base}/attachments/${item.id}`)).status, 404);
     assert.equal((await other.request(`/api/accounts/${otherAccount.id}/messages`, { method: 'POST', body: { phone: '123456789', attachment: item.id } })).status, 400);
     await service.stop(); service = await launch(dataDir);
     const restored = client(service.base);
     assert.equal((await restored.request('/api/auth/login', { method: 'POST', body: { username: 'six-pass', password: generated } })).status, 200);
     assert.deepEqual(Buffer.from(await (await restored.request(`${base}/attachments/${item.id}`)).arrayBuffer()), file);
+  } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
+});
+
+test('admin-managed numbers transfer without exposing messages to admin; custom quotas include legacy numbers', { timeout: 30000 }, async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'blue-assignments-')); let service = await launch(dataDir);
+  try {
+    const admin = client(service.base), alice = client(service.base), bob = client(service.base), anonymous = client(service.base);
+    await admin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    const aliceUser = (await (await anonymous.request('/api/auth/register', { method: 'POST', body: credentials('assigned-alice') })).json()).user;
+    const bobUser = (await (await anonymous.request('/api/auth/register', { method: 'POST', body: credentials('assigned-bob') })).json()).user;
+    await alice.request('/api/auth/login', { method: 'POST', body: credentials('assigned-alice') }); await bob.request('/api/auth/login', { method: 'POST', body: credentials('assigned-bob') });
+    assert.equal((await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 2 } })).status, 200);
+    await admin.request(`/api/admin/users/${bobUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 1 } });
+    const existing = legacyAccount(dataDir, aliceUser.id, 'Existing self-owned');
+    assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'No new self-owned' } })).status, 403);
+    assert.equal((await alice.request(`/api/accounts/${existing.id}/state`)).status, 200);
+    assert.equal((await alice.request('/api/admin/numbers')).status, 403);
+    const pool = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Provisioned' } })).json()).account;
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/state`)).status, 404);
+    assert.equal((await admin.request(`/api/accounts/${pool.id}/state`)).status, 404, 'admin pool never grants chat access');
+    const state = await (await admin.request(`/api/admin/numbers/${pool.id}/state`)).json();
+    assert.equal(Object.hasOwn(state, 'messages'), false); assert.equal(Object.hasOwn(state, 'contacts'), false);
+    const assign = (id, userId) => admin.request(`/api/admin/numbers/${id}/assignment`, { method: 'PATCH', body: { userId } });
+    assert.equal((await assign(pool.id, aliceUser.id)).status, 200);
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/state`)).status, 200);
+    assert.equal((await alice.request(`/api/accounts/${pool.id}`, { method: 'DELETE' })).status, 403);
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/logout`, { method: 'POST' })).status, 403);
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/connect`, { method: 'POST' })).status, 403);
+    const extra = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Another' } })).json()).account;
+    assert.equal((await assign(extra.id, aliceUser.id)).status, 409, 'legacy self-owned number counts toward quota');
+    assert.equal((await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 4 } })).status, 200);
+    assert.equal((await assign(extra.id, aliceUser.id)).status, 200, 'custom limit overrides basic plan default');
+    const fixture = new Store(dataDir); const original = fixture.account(pool.id); const jid = '123456789@s.whatsapp.net';
+    fixture.remember(pool.id, { id: 'PRIVATE', jid, name: 'Private contact', text: 'Number history', time: Date.now() }); fixture.close();
+    const file = Buffer.from('%PDF-1.4\nkept on reassignment');
+    const upload = await alice.request(`/api/accounts/${pool.id}/attachments?mime=application/pdf&name=kept.pdf`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }); assert.equal(upload.status, 200);
+    const attachment = (await upload.json()).attachment;
+    const controller = new AbortController(); const stream = await alice.request(`/api/accounts/${pool.id}/events`, { signal: controller.signal }); const reader = stream.body.getReader(); await reader.read();
+    assert.equal((await assign(pool.id, null)).status, 200);
+    assert.match(new TextDecoder().decode((await reader.read()).value), /event: revoked/); controller.abort();
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/state`)).status, 404);
+    assert.equal((await alice.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).status, 404);
+    assert.equal((await admin.request(`/api/accounts/${pool.id}/state`)).status, 404);
+    assert.equal((await assign(pool.id, bobUser.id)).status, 200);
+    assert.deepEqual(Buffer.from(await (await bob.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).arrayBuffer()), file);
+    const transferred = await (await bob.request(`/api/accounts/${pool.id}/state`)).json(); assert.equal(transferred.messages[0].text, 'Number history'); assert.equal(transferred.account.storage_owner_id, original.storage_owner_id);
+    assert.equal((await (await admin.request('/api/accounts')).json()).accounts.some(a => a.id === pool.id), false);
+    assert.equal((await admin.request(`/api/admin/numbers/${pool.id}/connect`, { method: 'POST' })).status, 400);
+    const beforeRestart = transferred.account;
+    await service.stop(); service = await launch(dataDir); const restoredBob = client(service.base);
+    await restoredBob.request('/api/auth/login', { method: 'POST', body: credentials('assigned-bob') });
+    const restored = await (await restoredBob.request(`/api/accounts/${pool.id}/state`)).json(); assert.equal(restored.account.storage_owner_id, beforeRestart.storage_owner_id); assert.equal(restored.messages[0].text, 'Number history');
+    assert.deepEqual(Buffer.from(await (await restoredBob.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).arrayBuffer()), file);
   } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
 });

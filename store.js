@@ -23,7 +23,7 @@ async function passwordMatches(password, hash) {
   return timingSafeEqual(key, Buffer.from(value, 'hex'));
 }
 export function entitlement(user, now = Date.now()) {
-  const limit = plans[user.plan]?.limit || 0;
+  const limit = Number.isInteger(user.number_limit) ? user.number_limit : plans[user.plan]?.limit || 0;
   return { active: user.role === 'admin' || Boolean(user.enabled && user.expires_at > now && limit), limit, expiresAt: user.expires_at, plan: user.plan };
 }
 export class Store {
@@ -43,6 +43,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS contacts (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, jid TEXT NOT NULL, remark TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', read_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,jid));
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
     `);
+    if (!this.db.prepare('PRAGMA table_info(users)').all().some(c => c.name === 'number_limit')) this.db.exec('ALTER TABLE users ADD COLUMN number_limit INTEGER');
+    if (!this.db.prepare('PRAGMA table_info(accounts)').all().some(c => c.name === 'managed')) this.db.exec('ALTER TABLE accounts ADD COLUMN managed INTEGER NOT NULL DEFAULT 0');
+    if (!this.db.prepare('PRAGMA table_info(accounts)').all().some(c => c.name === 'storage_owner_id')) this.db.exec('ALTER TABLE accounts ADD COLUMN storage_owner_id TEXT');
+    this.db.exec('UPDATE accounts SET storage_owner_id=user_id WHERE storage_owner_id IS NULL');
   }
   user(id) { return this.db.prepare('SELECT * FROM users WHERE id=?').get(id); }
   byName(name) { return this.db.prepare('SELECT * FROM users WHERE username=?').get(name); }
@@ -87,12 +91,14 @@ export class Store {
     if (!user) fail(404, '用户不存在');
     if (user.role === 'admin') fail(400, '不能修改超级管理员的订阅');
     if (!grant || typeof grant.enabled !== 'boolean' || !plans[grant.plan]) fail(400, '请选择有效套餐和使用权限');
+    if (grant.limit !== undefined && (!Number.isInteger(grant.limit) || grant.limit < 0 || grant.limit > 1000)) fail(400, '号码数量需要0–1000的整数');
+    const customLimit = grant.limit === undefined ? null : grant.limit;
     const expires = grant.expiresAt === null ? null : Date.parse(grant.expiresAt);
     if ((grant.enabled && (!Number.isFinite(expires) || expires <= Date.now())) || (expires !== null && !Number.isFinite(expires))) fail(400, '开通订阅需要设置未来的到期时间');
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('UPDATE users SET enabled=?,plan=?,expires_at=? WHERE id=?').run(grant.enabled ? 1 : 0, grant.plan, expires, id);
-      this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, id, 'subscription', JSON.stringify({ enabled: grant.enabled, plan: grant.plan, expiresAt: expires }), Date.now());
+      this.db.prepare('UPDATE users SET enabled=?,plan=?,expires_at=?,number_limit=? WHERE id=?').run(grant.enabled ? 1 : 0, grant.plan, expires, customLimit, id);
+      this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, id, 'subscription', JSON.stringify({ enabled: grant.enabled, plan: grant.plan, limit: customLimit, expiresAt: expires }), Date.now());
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.publicUser(this.user(id));
@@ -111,9 +117,12 @@ export class Store {
   }
   attachment(account, id) { return typeof id === 'string' ? this.db.prepare('SELECT id,name,mime,type,size FROM attachments WHERE account_id=? AND id=?').get(account, id) : undefined; }
   addAttachment(account, item) { this.db.prepare('INSERT INTO attachments VALUES(?,?,?,?,?,?)').run(item.id, account, item.name, item.mime, item.type, item.size); }
-  accounts(userId) { return this.db.prepare('SELECT * FROM accounts WHERE user_id=? ORDER BY created_at,id').all(userId); }
+  accounts(userId) { return this.db.prepare('SELECT * FROM accounts WHERE user_id=? AND managed<>1 ORDER BY created_at,id').all(userId); }
   account(id) { return this.db.prepare('SELECT * FROM accounts WHERE id=?').get(id); }
   allowed(account) {
+    account = this.account(account.id);
+    if (!account) return false;
+    if (account.managed === 1) return true;
     const user = this.user(account.user_id);
     if (!user || !entitlement(user).active) return false;
     return this.accounts(user.id).slice(0, entitlement(user).limit).some(a => a.id === account.id);
@@ -128,9 +137,33 @@ export class Store {
       if (this.accounts(userId).length >= access.limit) fail(409, `当前套餐最多可添加 ${access.limit} 个号码`);
       const id = randomUUID();
       const previous = this.accounts(userId).at(-1);
-      this.db.prepare('INSERT INTO accounts VALUES(?,?,?,?)').run(id, userId, label.trim(), Math.max(Date.now(), (previous?.created_at || 0) + 1));
+      this.db.prepare('INSERT INTO accounts(id,user_id,label,created_at,storage_owner_id) VALUES(?,?,?,?,?)').run(id, userId, label.trim(), Math.max(Date.now(), (previous?.created_at || 0) + 1), userId);
       this.db.exec('COMMIT');
       return this.account(id);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  canAccess(userId, account) { const current = this.account(account.id); return Boolean(current && current.managed !== 1 && current.user_id === userId); }
+  managedAccounts() { return this.db.prepare('SELECT * FROM accounts WHERE managed<>0 ORDER BY created_at,id').all(); }
+  createManaged(actor, label) {
+    if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可添加号码');
+    if (typeof label !== 'string' || !label.trim() || label.length > 60) fail(400, '号码备注需要1–60个字符');
+    const id = randomUUID(); this.db.prepare('INSERT INTO accounts(id,user_id,label,created_at,managed,storage_owner_id) VALUES(?,?,?,?,1,?)').run(id, actor, label.trim(), Date.now(), actor);
+    return this.account(id);
+  }
+  assignAccount(actor, id, target) {
+    if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可分配');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const account = this.account(id);
+      if (!account || !account.managed) fail(404, '仅可分配管理员新建的托管号码');
+      if (target !== null) {
+        const user = this.user(target);
+        if (!user || user.role === 'admin' || !entitlement(user).active) fail(400, '请选择订阅有效的普通用户');
+        if (account.managed !== 2 || account.user_id !== target) if (this.accounts(target).length >= entitlement(user).limit) fail(409, '用户号码额度不足，已有自有号码也计入额度');
+      }
+      this.db.prepare('UPDATE accounts SET user_id=?,managed=? WHERE id=?').run(target || account.storage_owner_id, target ? 2 : 1, id);
+      this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, target || actor, 'number_assignment', JSON.stringify({ accountId: id, previousUser: account.managed === 2 ? account.user_id : null, userId: target }), Date.now());
+      this.db.exec('COMMIT'); return this.account(id);
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { Store } from '../store.js';
+function legacyAccount(dir, userId, label) { const store = new Store(dir); try { return store.createAccount(userId, label); } finally { store.close(); } }
 import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -44,7 +46,8 @@ try {
     await page.waitForFunction(() => !document.getElementById('flow-example').disabled);
   }
   await login(admin, 'template-admin', 'admin-test-123');
-  const adminAccount = (await request(admin, '/api/accounts', 'POST', { label: 'Admin number' })).data.account;
+  const adminId = (await request(admin, '/api/auth/me')).data.user.id;
+  const adminAccount = legacyAccount(dir, adminId, 'Existing admin number');
   await openFlows(admin);
   await admin.click('#flow-example');
   await admin.waitForFunction(() => !document.getElementById('template-editor').hidden && !document.getElementById('flow-save').disabled);
@@ -67,7 +70,7 @@ try {
   assert.equal(registered.status, 201);
   await request(admin, `/api/admin/users/${registered.data.user.id}`, 'PATCH', { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 86400000).toISOString() });
   await login(user, 'new-template-user', '123456');
-  const userAccount = (await request(user, '/api/accounts', 'POST', { label: 'User number' })).data.account;
+  const userAccount = legacyAccount(dir, registered.data.user.id, 'Existing user number');
   await openFlows(user);
   assert.match(await user.$eval('#flow-template', element => element.selectedOptions[0].textContent), /示例1 · 已更新.*v2/);
   await user.click('#flow-example');

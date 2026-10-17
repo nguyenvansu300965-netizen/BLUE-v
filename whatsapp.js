@@ -14,7 +14,7 @@ export class WhatsAppAccount {
     this.connectTimeout = connectTimeout; this.sampleResources = sampleResources; this.logFailure = logFailure;
     this.createClient = createClient;
     this.account = account; this.store = store;
-    this.dir = path.join(dataDir, 'tenants', account.user_id, account.id);
+    this.dir = path.join(dataDir, 'tenants', account.storage_owner_id || account.user_id, account.id);
     this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
     this.pendingReceipts = new Map();
     this.contactLookups = new Map(); this.contactQueue = Promise.resolve();
@@ -43,6 +43,7 @@ export class WhatsAppAccount {
     return this;
   }
   requireConnected() {
+    if (this.handover) throw new AppError(409, '号码正在分配，请稍后重试');
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected' || !this.state.user?.id) throw new AppError(409, '请先扫码连接此号码');
   }
@@ -113,7 +114,7 @@ export class WhatsAppAccount {
       const added = this.remember(message);
       this.resolveContact(item.jid);
       if (!history && !item.outgoing && item.media?.type === 'image' && item.media.size <= 5 * 1024 * 1024) void this.downloadMessageMedia(item.id).catch(() => {});
-      if (!added || history) return;
+      if (!added || history || this.store.account(this.account.id)?.managed === 1) return;
       void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
     } else if (event.type === 'logout') {
       await rm(this.sessionMarker, { force: true });
@@ -131,6 +132,7 @@ export class WhatsAppAccount {
     }
   }
   async connect() {
+    if (this.handover) throw new AppError(409, '号码正在分配');
     if (!this.store.allowed(this.account)) throw new AppError(403, '没有使用权限');
     if (this.connecting || this.client) return;
     this.connecting = true;
