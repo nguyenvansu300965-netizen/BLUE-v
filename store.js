@@ -1,3 +1,4 @@
+import { activationHash, validateBatch } from './activation-codes.js';
 import { displayMessage, isImageEncoding, receiptAck, mergeReceipt } from './messages.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
@@ -41,6 +42,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS flow_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS contacts (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, jid TEXT NOT NULL, remark TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', read_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,jid));
+      CREATE TABLE IF NOT EXISTS activation_batches (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, fingerprint TEXT NOT NULL, code_count INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS activation_codes (hash TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES activation_batches(id), redeemed_at INTEGER, redeemed_by TEXT, account_id TEXT);
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
     `);
     if (!this.db.prepare('PRAGMA table_info(users)').all().some(c => c.name === 'number_limit')) this.db.exec('ALTER TABLE users ADD COLUMN number_limit INTEGER');
@@ -144,11 +147,35 @@ export class Store {
   }
   canAccess(userId, account) { const current = this.account(account.id); return Boolean(current && current.managed !== 1 && current.user_id === userId); }
   managedAccounts() { return this.db.prepare('SELECT * FROM accounts WHERE managed<>0 ORDER BY created_at,id').all(); }
-  createManaged(actor, label) {
+  importActivationBatch(batch) {
+    const fingerprint = validateBatch(batch);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.db.prepare('SELECT fingerprint FROM activation_batches WHERE id=?').get(batch.batchId);
+      if (existing && existing.fingerprint !== fingerprint) throw new Error('同一批次的激活码内容不一致');
+      this.db.prepare('INSERT OR IGNORE INTO activation_batches VALUES(?,?,?,?)').run(batch.batchId, batch.createdAt, fingerprint, batch.hashes.length);
+      const insert = this.db.prepare('INSERT OR IGNORE INTO activation_codes(hash,batch_id) VALUES(?,?)'); let added = 0;
+      for (const hash of batch.hashes) added += Number(insert.run(hash, batch.batchId).changes);
+      this.db.exec('COMMIT'); return { batchId: batch.batchId, added, count: batch.hashes.length };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  createManaged(actor, label, activationCode) {
     if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可添加号码');
     if (typeof label !== 'string' || !label.trim() || label.length > 60) fail(400, '号码备注需要1–60个字符');
-    const id = randomUUID(); this.db.prepare('INSERT INTO accounts(id,user_id,label,created_at,managed,storage_owner_id) VALUES(?,?,?,?,1,?)').run(id, actor, label.trim(), Date.now(), actor);
-    return this.account(id);
+    if (typeof activationCode !== 'string' || !activationCode.trim()) fail(400, '添加新号码必须填写激活码，请联系卖家购买');
+    const hash = activationHash(activationCode);
+    if (!hash) fail(400, '激活码无效或已使用');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const code = this.db.prepare('SELECT * FROM activation_codes WHERE hash=? AND redeemed_at IS NULL').get(hash);
+      if (!code) fail(400, '激活码无效或已使用');
+      const id = randomUUID(), now = Date.now();
+      const result = this.db.prepare('UPDATE activation_codes SET redeemed_at=?,redeemed_by=?,account_id=? WHERE hash=? AND redeemed_at IS NULL').run(now, actor, id, hash);
+      if (result.changes !== 1) fail(409, '激活码已使用');
+      this.db.prepare('INSERT INTO accounts(id,user_id,label,created_at,managed,storage_owner_id) VALUES(?,?,?,?,1,?)').run(id, actor, label.trim(), now, actor);
+      this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, actor, 'number_activation', JSON.stringify({ accountId: id, batchId: code.batch_id }), now);
+      this.db.exec('COMMIT'); return this.account(id);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   assignAccount(actor, id, target) {
     if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可分配');

@@ -422,7 +422,7 @@ async function loadAdmin() {
     $('admin-audit').replaceChildren(...result.audit.map(entry => {
       const div = document.createElement('div'); div.className = 'audit-entry';
       if (entry.action === 'password_change' || entry.action === 'password_reset') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${entry.action === 'password_reset' ? '随机重置密码' : '修改密码'}`; return div; }
-      const detail = JSON.parse(entry.detail); if (entry.action === 'number_assignment') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · 号码分配 · ${detail.accountId} · ${detail.userId ? entry.target_name : '已收回'}`; return div; } div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${planNames[detail.plan]}${detail.limit !== null && detail.limit !== undefined ? ` · ${detail.limit}个号码` : ''} · ${detail.enabled ? '开通 / 更新' : '停用'}${detail.expiresAt ? ` · 到期 ${new Date(detail.expiresAt).toLocaleString()}` : ''}`; return div;
+      const detail = JSON.parse(entry.detail); if (entry.action === 'number_activation') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · 新号码激活 · ${detail.accountId}`; return div; } if (entry.action === 'number_assignment') { div.textContent = `${new Date(entry.created_at).toLocaleString()} · 号码分配 · ${detail.accountId} · ${detail.userId ? entry.target_name : '已收回'}`; return div; } div.textContent = `${new Date(entry.created_at).toLocaleString()} · ${entry.target_name || entry.target} · ${planNames[detail.plan]}${detail.limit !== null && detail.limit !== undefined ? ` · ${detail.limit}个号码` : ''} · ${detail.enabled ? '开通 / 更新' : '停用'}${detail.expiresAt ? ` · 到期 ${new Date(detail.expiresAt).toLocaleString()}` : ''}`; return div;
     }));
   } catch (error) { $('admin-notice').textContent = error.message; }
 }
@@ -623,11 +623,25 @@ async function loadNumberPool(users = poolUsers) {
     }
   } catch (error) { if (epoch === authEpoch) $('admin-number-notice').textContent = error.message; }
 }
-$('admin-add-number').onclick = async () => {
-  const label = prompt('新托管号码备注'); if (label === null) return;
-  try { const { account } = await api('/api/admin/numbers', { method: 'POST', body: JSON.stringify({ label }) }); await loadNumberPool(); openPoolDevice(account); }
-  catch (error) { notice(error.message); }
+function closeNumberActivation() { $('number-activation-dialog').close(); $('number-activation-code').value = ''; $('number-activation-label').value = ''; $('number-activation-error').textContent = ''; }
+$('admin-add-number').onclick = () => {
+  if (me?.role !== 'admin') return;
+  closeNumberActivation(); $('number-activation-submit').disabled = false; $('number-activation-dialog').showModal(); $('number-activation-label').focus();
 };
+$('number-activation-cancel').onclick = closeNumberActivation;
+$('number-activation-dialog').addEventListener('cancel', closeNumberActivation);
+$('number-activation-form').onsubmit = async event => {
+  event.preventDefault(); if (me?.role !== 'admin') return;
+  const epoch = authEpoch, owner = me.id;
+  $('number-activation-submit').disabled = true; $('number-activation-error').textContent = '';
+  try {
+    const { account } = await api('/api/admin/numbers', { method: 'POST', body: JSON.stringify({ label: $('number-activation-label').value, activationCode: $('number-activation-code').value }) });
+    if (epoch !== authEpoch || me?.id !== owner) return;
+    closeNumberActivation(); await loadNumberPool(); if (epoch === authEpoch && me?.id === owner) openPoolDevice(account);
+  } catch (error) { if (epoch === authEpoch && me?.id === owner) $('number-activation-error').textContent = error.message; }
+  finally { if (epoch === authEpoch && me?.id === owner) $('number-activation-submit').disabled = false; }
+};
+window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') closeNumberActivation(); });
 function closePoolDevice() { poolDialogId = ''; clearTimeout(poolPoll); $('pool-device-dialog').close(); $('pool-qr').removeAttribute('src'); $('pool-qr').hidden = true; }
 function openPoolDevice(item) { closePoolDevice(); poolDialogId = item.id; $('pool-device-status').textContent = '正在读取连接状态…'; $('pool-connect').disabled = true; $('pool-device-title').textContent = item.label; $('pool-device-dialog').showModal(); void refreshPoolDevice(); }
 async function refreshPoolDevice() {

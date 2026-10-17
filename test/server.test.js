@@ -6,6 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Store } from '../store.js';
+import { generateCodes, activationHash } from '../scripts/generate-activation-codes.mjs';
 function legacyAccount(dir, user, label) { const store = new Store(dir); try { return store.createAccount(user, label); } finally { store.close(); } }
 
 const origin = 'https://blue.example';
@@ -252,6 +253,7 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     assert.equal((await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 2 } })).status, 200);
     await admin.request(`/api/admin/users/${bobUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 1 } });
     const existing = legacyAccount(dataDir, aliceUser.id, 'Existing self-owned');
+    const codes = generateCodes(2); { const fixture = new Store(dataDir); fixture.importActivationBatch({ batchId: codes.batchId, createdAt: new Date().toISOString(), hashes: codes.codes.map(activationHash) }); fixture.close(); }
     assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'No new self-owned' } })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${existing.id}/state`)).status, 200);
     for (const action of ['connect', 'logout']) assert.equal((await alice.request(`/api/accounts/${existing.id}/${action}`, { method: 'POST' })).status, 403);
@@ -260,7 +262,12 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     const legacyMeta = await (await admin.request(`/api/admin/numbers/${existing.id}/state`)).json();
     assert.equal(Object.hasOwn(legacyMeta, 'messages'), false); assert.equal(legacyMeta.userId, aliceUser.id);
     assert.equal((await alice.request('/api/admin/numbers')).status, 403);
-    const pool = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Provisioned' } })).json()).account;
+    assert.equal((await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Missing code' } })).status, 400);
+    assert.equal((await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Invalid code', activationCode: 'invalid' } })).status, 400);
+    const creation = await Promise.all([1, 2].map(() => admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Provisioned', activationCode: codes.codes[0] } })));
+    assert.deepEqual(creation.map(r => r.status).sort(), [201, 400]);
+    const pool = (await creation.find(r => r.status === 201).json()).account;
+    assert.equal((await admin.request('/api/admin/activation-codes', { method: 'POST', body: { count: 1000 } })).status, 404, 'web administrators have no code generation/import API');
     assert.equal((await alice.request(`/api/accounts/${pool.id}/state`)).status, 404);
     assert.equal((await admin.request(`/api/accounts/${pool.id}/state`)).status, 404, 'admin pool never grants chat access');
     const state = await (await admin.request(`/api/admin/numbers/${pool.id}/state`)).json();
@@ -271,7 +278,7 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     assert.equal((await alice.request(`/api/accounts/${pool.id}`, { method: 'DELETE' })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${pool.id}/logout`, { method: 'POST' })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${pool.id}/connect`, { method: 'POST' })).status, 403);
-    const extra = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Another' } })).json()).account;
+    const extra = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Another', activationCode: codes.codes[1] } })).json()).account;
     assert.equal((await assign(extra.id, aliceUser.id)).status, 409, 'legacy self-owned number counts toward quota');
     assert.equal((await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: { ...grant('basic'), limit: 4 } })).status, 200);
     assert.equal((await assign(extra.id, aliceUser.id)).status, 200, 'custom limit overrides basic plan default');

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { generateCodes, activationHash } from '../scripts/generate-activation-codes.mjs';
 import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -10,6 +11,7 @@ const dir = await mkdtemp('/tmp/blue-managed-browser-'); const store = new Store
 await store.bootstrap('pool-admin', '123456'); const admin = store.byName('pool-admin');
 const user = await store.createUser('pool-customer', '123456'); store.grant(admin.id, user.id, { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 86400000).toISOString() });
 const legacy = store.createAccount(user.id, 'Existing own number');
+const batch = generateCodes(1); store.importActivationBatch({ batchId: batch.batchId, createdAt: new Date().toISOString(), hashes: batch.codes.map(activationHash) });
 const service = spawn(process.execPath, ['server.js'], { cwd: new URL('..', import.meta.url), env: { ...process.env, DATA_DIR: dir, NODE_ENV: 'development', ADMIN_USER: 'pool-admin', ADMIN_PASSWORD: '123456', PUBLIC_ORIGIN: '', AUTO_CONNECT: 'false', PORT: '0', HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser;
 try {
@@ -27,8 +29,14 @@ try {
   const saved = page.waitForResponse(r => r.url().endsWith(`/api/admin/users/${user.id}`) && r.request().method() === 'PATCH');
   await page.click('#admin-users button[type=submit]'); assert.equal((await saved).status(), 200);
   assert.equal(store.publicUser(store.user(user.id)).limit, 3);
-  page.once('dialog', d => d.accept('Managed customer number'));
-  await page.click('#admin-add-number'); await page.waitForSelector('#pool-device-dialog[open]');
+  await page.click('#admin-add-number'); await page.waitForSelector('#number-activation-dialog[open]');
+  await page.type('#number-activation-label', 'Managed customer number');
+  await page.type('#number-activation-code', 'invalid'); await page.click('#number-activation-submit');
+  await page.waitForFunction(() => document.getElementById('number-activation-error').textContent.includes('无效'));
+  assert.equal(store.managedAccounts().length, 0);
+  await page.$eval('#number-activation-code', (el, code) => { el.value = code; }, batch.codes[0]);
+  await page.click('#number-activation-submit'); await page.waitForSelector('#pool-device-dialog[open]');
+  assert.equal(await page.$eval('#number-activation-code', el => el.value), '', 'plaintext code clears after redemption');
   await page.waitForFunction(() => document.getElementById('pool-device-status').textContent.includes('未连接'));
   assert.ok(!adminRequests.some(path => /\/api\/accounts\/[^/]+\/(events|state)/.test(path)), 'admin provisioning never opens message state or stream');
   await page.click('#pool-device-close');

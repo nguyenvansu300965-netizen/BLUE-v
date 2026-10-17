@@ -12,6 +12,7 @@ import { validateFlows, saveFlows } from './automation.js';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, '.data'));
 const store = new Store(dataDir);
+for (const file of [path.join(root, 'activation-batches', 'initial.json'), ...(process.env.ACTIVATION_CODE_MANIFEST ? [path.resolve(process.env.ACTIVATION_CODE_MANIFEST)] : [])]) store.importActivationBatch(JSON.parse(await readFile(file, 'utf8')));
 await store.bootstrap(process.env.ADMIN_USER, process.env.ADMIN_PASSWORD);
 const publicOrigin = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : null;
 const production = process.env.NODE_ENV === 'production';
@@ -99,7 +100,7 @@ const poolView = account => {
   return { id: account.id, label: account.label, managed: account.managed, userId: account.managed !== 1 ? account.user_id : null, username: account.managed !== 1 ? store.user(account.user_id)?.username : null, status: rt?.state.status || 'idle', number: rt?.state.user?.phoneNumber || '', allowed: store.allowed(account) };
 };
 app.get('/api/admin/numbers', (req, res) => res.json({ accounts: store.db.prepare('SELECT * FROM accounts ORDER BY created_at,id').all().map(poolView) }));
-app.post('/api/admin/numbers', (req, res) => res.status(201).json({ account: poolView(store.createManaged(req.user.id, req.body?.label)) }));
+app.post('/api/admin/numbers', (req, res) => { rate(`activation:${req.user.id}`, 30, 60000); res.status(201).json({ account: poolView(store.createManaged(req.user.id, req.body?.label, req.body?.activationCode)) }); });
 app.get('/api/admin/numbers/:id/state', async (req, res) => {
   const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
   const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed !== 2 ? rt.state.qr : null, error: rt.state.error, progress: rt.state.progress });

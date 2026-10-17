@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { generateCodes, activationHash } from '../scripts/generate-activation-codes.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -85,7 +86,8 @@ test('legacy schema migrates without moving ownership or changing plan limits; m
     store.close(); store = new Store(dir);
     assert.equal(store.publicUser(store.user(user.id)).limit, 5); assert.equal(store.account(old.id).managed, 0); assert.equal(store.account(old.id).storage_owner_id, user.id);
     assert.equal(store.canAccess(user.id, old), true);
-    const pool = store.createManaged(admin.id, 'Pooled'); runtime = await new WhatsAppAccount(pool, store, dir).init();
+    const batch = generateCodes(1); store.importActivationBatch({ batchId: batch.batchId, createdAt: new Date().toISOString(), hashes: batch.codes.map(activationHash) });
+    const pool = store.createManaged(admin.id, 'Pooled', batch.codes[0]); runtime = await new WhatsAppAccount(pool, store, dir).init();
     const profile = runtime.profileDir; let closed = 0; const client = { close: async () => { closed++; } }; runtime.client = client; runtime.state.status = 'connected'; runtime.state.user = { id: '123456789@s.whatsapp.net' };
     runtime.account = store.assignAccount(admin.id, pool.id, user.id);
     assert.equal(runtime.profileDir, profile); assert.equal(runtime.client, client); assert.equal(store.canAccess(admin.id, pool), false); assert.equal(store.canAccess(user.id, pool), true);
