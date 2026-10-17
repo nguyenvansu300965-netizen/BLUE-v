@@ -35,9 +35,10 @@ export function installWaBridge() {
 
     return {
       id: typeof key === 'string' ? key : key?.id || key?._serialized,
-      chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe,
+      chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe, sourceId: serialized,
+      mime: typeof msg.mimetype === 'string' ? msg.mimetype : '', filename: typeof msg.filename === 'string' ? msg.filename : '', size: Number(msg.size || 0),
       body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
-      buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
+      buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.thumbnail === 'string' ? msg.thumbnail : typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
       name: fallbackName || (typeof msg.notifyName === 'string' ? msg.notifyName : ''), timestamp: Number(msg.t || 0), type: msg.type,
       history: history || Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
       selectedId: msg.selectedId || msg.listResponse?.singleSelectReply?.selectedRowId,
@@ -240,6 +241,22 @@ export class WaJsClient {
       }
       return { messages, chatCount: chats.length, failedChats };
     });
+  }
+  async downloadMessageMedia(sourceId) {
+    return this.page.evaluate(async id => {
+      let timer;
+      const operation = async () => {
+        const msg = await window.WPP.chat.getMessageById(id);
+        if (Number(msg?.size || 0) > 20 * 1024 * 1024) throw new Error('MEDIA_TOO_LARGE');
+        const blob = await window.WPP.chat.downloadMedia(id);
+        if (!(blob instanceof Blob) || !blob.size) throw new Error('MEDIA_UNAVAILABLE');
+        if (blob.size > 20 * 1024 * 1024) throw new Error('MEDIA_TOO_LARGE');
+        const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('MEDIA_UNAVAILABLE')); reader.readAsDataURL(blob); });
+        return { base64: dataUrl.slice(dataUrl.indexOf(',') + 1), mime: blob.type || msg.mimetype || 'application/octet-stream' };
+      };
+      try { return await Promise.race([operation(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('MEDIA_TIMEOUT')), 30000); })]); }
+      finally { clearTimeout(timer); }
+    }, sourceId);
   }
   async contactInfo(jid) {
     return this.page.evaluate(async to => {

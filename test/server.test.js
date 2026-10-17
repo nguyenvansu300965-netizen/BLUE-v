@@ -67,6 +67,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
     assert.equal((await bob.request(`${base}/connect`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
+    assert.equal((await bob.request(`${base}/messages/PRIVATE/media`, { method: 'POST' })).status, 404);
+    assert.equal((await alice.request(`${base}/messages/missing/media`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(base, { method: 'DELETE' })).status, 404);
     const state = await (await alice.request(`${base}/state`)).json(); assert.equal(state.status, 'idle'); assert.deepEqual(state.messages, []);
     assert.equal(state.user, null); assert.equal(state.account.user_id, aliceUser.id);

@@ -30,3 +30,12 @@ test('image and interactive echoes show captions/previews instead of base64 bodi
   assert.equal(normalizeWaMessage({ ...raw, body: '/9j/' + 'A'.repeat(300000) }).thumbnail, undefined);
   assert.equal(normalizeWaMessage({ ...raw, type: 'chat', body: '正常文字', caption: '' }).text, '正常文字');
 });
+
+test('incoming media retain download identity and readable type labels', () => {
+  const raw = { id: 'false_123456789@c.us_MEDIA', chatId: '123456789@c.us', timestamp: 123, body: '', mime: 'audio/ogg; codecs=opus', filename: 'voice.ogg', size: 2048 };
+  for (const [type, label] of [['ptt','[语音]'],['audio','[音频]'],['video','[视频]'],['document','[文件]'],['sticker','[贴图]'],['image','[图片]']]) {
+    const message = normalizeWaMessage({ ...raw, type });
+    assert.equal(message.text, label); assert.equal(message.media.type, type); assert.equal(message.media.sourceId, 'false_123456789@c.us_MEDIA'); assert.equal(message.media.size, 2048);
+  }
+  assert.equal(normalizeWaMessage({ ...raw, type: 'image', caption: '客户截图' }).text, '客户截图');
+});

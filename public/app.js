@@ -178,8 +178,8 @@ function renderMessages() {
     const text = document.createElement('div'); text.className = 'bubble-text'; text.textContent = message.text;
     const time = document.createElement('span'); time.className = 'bubble-time'; time.textContent = `${message.automatic ? '自动回复 · ' : ''}${new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${message.outgoing ? ' ✓' : ''}`;
     const imageUrl = /^[a-f0-9]{32}\.(png|jpg|webp)$/.test(message.image || '') ? `/api/accounts/${selectedAccount}/media/${message.image}` : /^data:image\/(jpeg|png|webp);base64,/.test(message.thumbnail || '') ? message.thumbnail : null;
-    if (imageUrl) {
-      const image = document.createElement('img'); image.className = 'message-image'; image.src = imageUrl; image.alt = '消息图片'; image.loading = 'lazy';
+    if (imageUrl && !message.attachment) {
+      const image = document.createElement('img'); image.className = 'message-image'; image.src = imageUrl; image.alt = '消息缩略图'; image.loading = 'lazy';
       image.onerror = () => { image.hidden = true; };
       bubble.append(image);
     }
@@ -189,11 +189,26 @@ function renderMessages() {
         const media = document.createElement(item.type === 'image' ? 'img' : item.type);
         media.className = item.type === 'image' ? 'message-image' : 'message-media'; media.src = url;
         if (item.type === 'image') { media.alt = item.name; media.loading = 'lazy'; } else { media.controls = true; media.preload = 'metadata'; }
-        bubble.append(media);
+        if (item.type === 'image') { const full = document.createElement('a'); full.href = url; full.target = '_blank'; full.rel = 'noopener'; full.title = '点击查看原图'; full.append(media); bubble.append(full); } else bubble.append(media);
       }
       const link = document.createElement('a'); link.href = `${url}?download=1`; link.textContent = `下载 ${item.name}`; link.className = 'message-download'; bubble.append(link);
     }
-    bubble.append(text);
+    if (message.media && !message.attachment) {
+      const load = document.createElement('button'); load.type = 'button'; load.className = 'outline load-message-media';
+      load.textContent = message.media.type === 'image' ? '加载原图' : message.media.type === 'ptt' || message.media.type === 'audio' ? '加载语音/音频' : message.media.type === 'video' ? '加载视频' : '加载文件';
+      if (message.media.size > 20 * 1024 * 1024) { load.textContent = '媒体超过 20MB，请在手机查看'; load.disabled = true; }
+      load.onclick = async () => {
+        const owner = me?.id, epoch = authEpoch, account = selectedAccount;
+        load.disabled = true; load.textContent = '正在下载…';
+        try {
+          const result = await api(`/api/accounts/${account}/messages/${encodeURIComponent(message.id)}/media`, { method: 'POST' });
+          if (epoch !== authEpoch || owner !== me?.id || account !== selectedAccount) return;
+          messages = messages.map(item => item.id === message.id ? result.message : item); renderMessages();
+        } catch (error) { if (epoch === authEpoch && owner === me?.id && account === selectedAccount) { load.disabled = false; load.textContent = '下载失败，点击重试'; notice(error.message); } }
+      };
+      bubble.append(load);
+    }
+    if (!message.attachment || !['[图片]', '[语音]', '[音频]', '[视频]', '[文件]', '[贴图]'].includes(message.text)) bubble.append(text);
     if (message.buttons?.length) {
       const choices = document.createElement('div'); choices.className = 'message-choices'; choices.setAttribute('aria-label', '消息中的选项');
       for (const option of message.buttons) { const label = document.createElement('span'); label.textContent = option.label; choices.append(label); }

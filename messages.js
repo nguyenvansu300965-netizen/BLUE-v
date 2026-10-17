@@ -35,13 +35,15 @@ export function normalizeWaMessage(raw) {
   }
   const selection = raw.selectedButtonId || raw.selectedId || params.id;
   const encoded = isImageEncoding(raw.body);
+  const mediaKind = ['image', 'video', 'audio', 'ptt', 'document', 'sticker'].includes(raw.type) ? raw.type : raw.mediaType === 'IMAGE' || encoded ? 'image' : null;
   const media = ['image', 'video', 'audio', 'ptt', 'document', 'sticker'].includes(raw.type) || raw.hasMediaAttachment || encoded;
   const caption = typeof raw.caption === 'string' && !isImageEncoding(raw.caption) ? raw.caption : '';
   const body = typeof raw.body === 'string' && !encoded ? raw.body : '';
-  const text = raw.label || params.display_text || (params.id ? '[选项回复]' : media ? caption || body : body || caption) || (selection ? '[选项回复]' : raw.type === 'image' || encoded || raw.mediaType === 'IMAGE' ? '[图片]' : '[非文本消息]');
+  const text = raw.label || params.display_text || (params.id ? '[选项回复]' : media ? caption || body : body || caption) || (selection ? '[选项回复]' : ({ image: '[图片]', video: '[视频]', audio: '[音频]', ptt: '[语音]', document: '[文件]', sticker: '[贴图]', location: '[位置]', vcard: '[联系人]' }[mediaKind || raw.type] || '[非文本消息]'));
   const thumbnail = imagePreview(raw.thumbnail) || (encoded ? imagePreview(raw.body) : undefined);
   const buttons = Array.isArray(raw.buttons) ? raw.buttons.filter(b => typeof b?.label === 'string').slice(0, 3).map(b => ({ label: b.label.slice(0, 100) })) : [];
 
-  return { id, jid, name: String(raw.name || jid).slice(0, 200), thumbnail, buttons, text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), history: Boolean(raw.history), time: Number(raw.timestamp || 0) * 1000,
+  const mediaInfo = mediaKind ? { type: mediaKind, sourceId: typeof raw.sourceId === 'string' && /^(true|false)_[^_]+_.+/.test(raw.sourceId) ? raw.sourceId : `${Boolean(raw.fromMe)}_${raw.chatId}_${id}`, mime: typeof raw.mime === 'string' ? raw.mime.slice(0, 120) : '', name: typeof raw.filename === 'string' ? raw.filename.slice(0, 200) : '', size: Number.isFinite(raw.size) && raw.size > 0 ? raw.size : 0 } : undefined;
+  return { id, jid, ...(mediaInfo ? { media: mediaInfo } : {}), name: String(raw.name || jid).slice(0, 200), thumbnail, buttons, text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), history: Boolean(raw.history), time: Number(raw.timestamp || 0) * 1000,
     selection: typeof selection === 'string' ? selection : undefined, quotedId: stanzaId(raw.quotedId) };
 }

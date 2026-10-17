@@ -6,6 +6,7 @@ import { normalizeWaMessage, toStoredJid } from './messages.js';
 import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
+import { randomBytes } from 'node:crypto';
 import { WaJsClient } from './wa-js-client.js';
 
 export class WhatsAppAccount {
@@ -15,6 +16,7 @@ export class WhatsAppAccount {
     this.account = account; this.store = store;
     this.dir = path.join(dataDir, 'tenants', account.user_id, account.id);
     this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
+    this.mediaDownloads = new Map(); this.mediaQueue = Promise.resolve();
     this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
     this.state = { status: 'idle', qr: null, user: null, error: null };
     this.receiver = { ready: false, received: 0, rejected: 0, lastEventAt: null, lastMessageAt: null, error: null };
@@ -95,7 +97,9 @@ export class WhatsAppAccount {
       if (!item || !Number.isFinite(item.time) || item.time <= 0) { this.receiver.rejected++; this.broadcast(); return; }
       this.receiver.lastMessageAt = Date.now();
       const { selection, quotedId, history, ...message } = item;
-      if (!this.remember(message) || history) return;
+      const added = this.remember(message);
+      if (!history && !item.outgoing && item.media?.type === 'image' && item.media.size <= 5 * 1024 * 1024) void this.downloadMessageMedia(item.id).catch(() => {});
+      if (!added || history) return;
       void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
     } else if (event.type === 'logout') {
       await rm(this.sessionMarker, { force: true });
@@ -187,6 +191,42 @@ export class WhatsAppAccount {
       }
     })().finally(() => { this.syncing = null; });
     return this.syncing;
+  }
+  downloadMessageMedia(id) {
+    if (this.mediaDownloads.has(id)) return this.mediaDownloads.get(id);
+    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    if (!message) return Promise.reject(new AppError(404, '消息不存在'));
+    if (message.attachment) return Promise.resolve(message);
+    if (!message.media) return Promise.reject(new AppError(400, '此消息尚无媒体信息，请先同步消息后再试'));
+    if (this.mediaDownloads.size >= 20) return Promise.reject(new AppError(429, '媒体下载队列繁忙，请稍后重试'));
+    const current = this.generation;
+    const task = this.mediaQueue.then(async () => {
+      this.requireConnected();
+      if (current !== this.generation) throw new AppError(409, '号码连接已变更，请重试');
+      let result;
+      try { result = await this.client.downloadMessageMedia(message.media.sourceId); }
+      catch (error) { throw new AppError(400, String(error.message).includes('MEDIA_TOO_LARGE') ? '媒体超过 20MB，请在手机 WhatsApp 查看' : '媒体下载失败，可能已过期或尚未同步，请稍后重试'); }
+      this.requireConnected();
+      if (current !== this.generation) throw new AppError(409, '号码连接已变更，请重试');
+      if (typeof result?.base64 !== 'string' || result.base64.length > 28000000) throw new AppError(400, '媒体过大或无效');
+      const data = Buffer.from(result.base64, 'base64');
+      if (!data.length || data.length > 20 * 1024 * 1024) throw new AppError(400, '媒体超过 20MB 或内容为空');
+      const mime = String(result.mime || message.media.mime || '').split(';')[0].trim().toLowerCase();
+      const safe = /^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm)|audio\/(mpeg|mp3|ogg|wav|mp4|webm)|application\/pdf|text\/plain)$/.test(mime);
+      const type = safe && mime.startsWith('image/') ? 'image' : safe && mime.startsWith('video/') ? 'video' : safe && mime.startsWith('audio/') ? 'audio' : 'document';
+      const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'video/mp4': 'mp4', 'application/pdf': 'pdf' }[mime] || 'bin';
+      const attachment = { id: randomBytes(16).toString('hex'), name: (message.media.name || `WhatsApp-${message.media.type}.${ext}`).replace(/[\x00-\x1f\x7f/\\]/g, '_').slice(0, 200), mime: safe ? mime : 'application/octet-stream', type, size: data.length };
+      await mkdir(this.mediaDir, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(this.mediaDir, `${attachment.id}.bin`), data, { mode: 0o600 });
+      this.store.addAttachment(this.account.id, attachment);
+      const updated = this.store.setMessageAttachment(this.account.id, id, attachment);
+      if (!updated) throw new AppError(404, '消息已不在当前保留记录中');
+      this.broadcast(); return updated;
+    });
+    this.mediaQueue = task.catch(() => {});
+    this.mediaDownloads.set(id, task);
+    void task.finally(() => this.mediaDownloads.delete(id)).catch(() => {});
+    return task;
   }
   async sendMedia(jid, attachment, caption) {
     this.requireConnected();

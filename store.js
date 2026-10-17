@@ -134,6 +134,13 @@ export class Store {
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
   messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  setMessageAttachment(account, id, attachment) {
+    const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
+    if (!row) return false;
+    const message = { ...JSON.parse(row.payload), attachment };
+    this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(JSON.stringify(message), account, id);
+    return message;
+  }
   flowMenu(account, jid, nodeId, quotedId, nodes) {
     const current = nodes.find(node => node.id === nodeId);
     for (const message of this.messages(account).reverse()) {
@@ -149,8 +156,9 @@ export class Store {
     if (!result.changes) {
       const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
       const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
-      if (((item.automatic || item.manual) && item.outgoing) || repair) {
-        const merged = JSON.stringify({ ...previous, ...item });
+      const mediaRepair = item.media && !previous.media && !previous.image && !previous.attachment;
+      if (((item.automatic || item.manual) && item.outgoing) || repair || mediaRepair) {
+        const merged = JSON.stringify(mediaRepair && !repair && !item.automatic && !item.manual ? { ...previous, media: item.media, ...(item.thumbnail && !previous.thumbnail ? { thumbnail: item.thumbnail } : {}) } : { ...previous, ...item });
         if (merged !== JSON.stringify(previous)) {
           this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(merged, account, item.id);
           return true;

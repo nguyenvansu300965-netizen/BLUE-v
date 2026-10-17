@@ -150,3 +150,29 @@ test('a third browser failure reports process limits and leaves two other owners
     assert.equal(failures[0].accountId, runtimes[2].account.id);
   } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true }); }
 });
+
+test('incoming full-resolution media are cached per account and downloads deduplicate without blocking reception', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-received-media-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('media-admin', '123456'); const user = store.byName('media-admin');
+    const account = store.createAccount(user.id, 'One'), other = store.createAccount(user.id, 'Other');
+    rt = await new WhatsAppAccount(account, store, dir).init();
+    rt.state.status = 'connected'; rt.state.user = { id: '123456789@s.whatsapp.net' }; let downloads = 0;
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jU1kAAAAASUVORK5CYII=', 'base64');
+    rt.client = { close: async () => {}, downloadMessageMedia: async sourceId => { downloads++; assert.equal(sourceId, 'false_987654321@c.us_MEDIA'); return { base64: png.toString('base64'), mime: 'image/png' }; } };
+    await rt.onClientEvent({ type: 'message', message: { id: 'MEDIA', chatId: '987654321@c.us', type: 'image', body: '', mime: 'image/png', timestamp: Date.now() / 1000 } }, rt.generation);
+    await rt.mediaQueue;
+    const message = store.messages(account.id).find(item => item.id === 'MEDIA');
+    assert.equal(message.attachment.type, 'image'); assert.equal(message.text, '[图片]');
+    const { readFile } = await import('node:fs/promises');
+    assert.deepEqual(await readFile(path.join(rt.mediaDir, `${message.attachment.id}.bin`)), png);
+    await rt.downloadMessageMedia('MEDIA'); assert.equal(downloads, 1, 'cached image must not be downloaded again');
+    assert.equal(store.attachment(other.id, message.attachment.id), undefined);
+    store.remember(account.id, { id: 'VOICE', jid: '987654321@s.whatsapp.net', text: '[语音]', media: { type: 'ptt', sourceId: 'voice' }, time: Date.now() });
+    rt.client.downloadMessageMedia = async () => { throw new Error('MEDIA_UNAVAILABLE'); };
+    await assert.rejects(rt.downloadMessageMedia('VOICE'), /媒体下载失败/);
+    rt.client.downloadMessageMedia = async () => ({ base64: png.toString('base64'), mime: 'audio/ogg; codecs=opus' });
+    const voice = await rt.downloadMessageMedia('VOICE'); assert.equal(voice.attachment.type, 'audio'); assert.equal(voice.attachment.mime, 'audio/ogg');
+    await assert.rejects(rt.downloadMessageMedia('foreign-message'), /消息不存在/);
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
+});

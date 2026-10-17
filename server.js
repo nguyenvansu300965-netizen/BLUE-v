@@ -180,6 +180,7 @@ accountRouter.post('/messages', async (req, res) => {
   req.runtime.remember({ id, jid, name: jid, text: text.trim() || `[${attachment?.name || '附件'}]`, ...(attachment ? { attachment } : {}), manual: true, outgoing: true, time: Date.now() });
   res.json({ ok: true, id });
 });
+accountRouter.post('/messages/:messageId/media', async (req, res) => res.json({ message: await req.runtime.downloadMessageMedia(req.params.messageId) }));
 const mediaTypes = {
   'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'image/gif': 'image',
   'video/mp4': 'video', 'video/webm': 'video',

@@ -87,6 +87,40 @@ try {
   assert.equal(await page.$eval('#send', element => element.disabled), true);
   await page.click('#close-device');
 
+  // Incoming media rendering uses real owner-scoped attachment URLs; download responses are fixtures.
+  const imageAsset = await page.evaluate(async id => {
+    const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9v8AAAAASUVORK5CYII='), c => c.charCodeAt(0));
+    return (await (await fetch(`/api/accounts/${id}/attachments?mime=image/png&name=received.png`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes })).json()).attachment;
+  }, created.id);
+  const incoming = { id: 'received-image', jid: '987654321@s.whatsapp.net', name: 'Media contact', text: '[图片]', outgoing: false, time: Date.now(), thumbnail: 'data:image/png;base64,AA==', media: { type: 'image', size: 68 } };
+  await page.evaluate(async ({ id, incoming }) => { closeStream(); const state = await (await fetch(`/api/accounts/${id}/state`)).json(); renderState({ ...state, messages: [incoming] }); }, { id: created.id, incoming });
+  await page.click('.chat-item');
+  assert.equal(await page.$eval('.load-message-media', el => el.textContent), '加载原图');
+  let mediaAttempts = 0;
+  const mediaHandler = req => {
+    if (!req.url().endsWith('/messages/received-image/media')) return;
+    mediaAttempts++;
+    void req.respond({ status: mediaAttempts === 1 ? 400 : 200, contentType: 'application/json', body: JSON.stringify(mediaAttempts === 1 ? { error: '暂时无法下载' } : { message: { ...incoming, attachment: imageAsset } }) });
+  };
+  // Replace the earlier interception listener, which otherwise continues every request.
+  page.removeAllListeners('request');
+  page.on('request', req => { if (req.url().endsWith('/messages/received-image/media')) mediaHandler(req); else void req.continue(); });
+  await page.click('.load-message-media');
+  await page.waitForFunction(() => document.querySelector('.load-message-media')?.textContent.includes('重试'));
+  await page.click('.load-message-media');
+  await page.waitForSelector('.bubble a[title="点击查看原图"] img');
+  assert.equal(await page.$$eval('.bubble img', els => els.length), 1, 'full image replaces thumbnail');
+  assert.equal(await page.$$eval('.load-message-media', els => els.length), 0);
+  assert.ok(!(await page.$eval('.bubble', el => el.textContent)).includes('[图片]'));
+  const src = await page.$eval('.bubble img', el => el.src);
+  assert.equal((await page.goto(src)).status(), 200, 'original image endpoint is accessible to its owner');
+  await page.goBack();
+  await page.waitForFunction(() => !document.getElementById('workspace').hidden);
+  await page.evaluate(async ({ id, incoming, imageAsset }) => { closeStream(); const state = await (await fetch(`/api/accounts/${id}/state`)).json(); renderState({ ...state, messages: [{ ...incoming, id: 'voice', text: '[语音]', attachment: { ...imageAsset, type: 'audio', name: 'voice.ogg' } }] }); }, { id: created.id, incoming, imageAsset });
+  await page.click('.chat-item');
+  assert.equal(await page.$eval('.bubble audio', el => el.controls), true);
+  assert.ok(!(await page.$eval('.bubble', el => el.textContent)).includes('[语音]'));
+
   const registered = await request(page, '/api/auth/register', 'POST', { username: 'isolated-user', password: '123456' });
   await request(page, `/api/admin/users/${registered.data.user.id}`, 'PATCH', { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 86400000).toISOString() });
   // Same-page logout/login must remove the old DOM even when the next user has no numbers.

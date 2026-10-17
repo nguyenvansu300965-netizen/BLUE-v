@@ -116,6 +116,16 @@ try {
     assert.equal(sent.options.type, type); assert.equal(sent.options.filename, name); assert.equal(sent.options.mimetype, mime); assert.equal(sent.options.caption, '附件文案');
     assert.equal(sent.data, `data:${mime};base64,${Buffer.from('fixture').toString('base64')}`);
   }
+  const mediaBytes = Buffer.from([137,80,78,71,13,10,26,10]);
+  await page.evaluate(bytes => {
+    window.downloadCalls = [];
+    window.WPP.chat.getMessageById = async () => ({ size: bytes.length, mimetype: 'image/png' });
+    window.WPP.chat.downloadMedia = async id => { window.downloadCalls.push(id); return new Blob([new Uint8Array(bytes)], { type: 'image/png' }); };
+  }, [...mediaBytes]);
+  assert.deepEqual(await client.downloadMessageMedia('false_123456789@c.us_MEDIA'), { base64: mediaBytes.toString('base64'), mime: 'image/png' });
+  await page.evaluate(() => { window.WPP.chat.getMessageById = async () => ({ size: 21 * 1024 * 1024 }); });
+  await assert.rejects(client.downloadMessageMedia('large-media'), /MEDIA_TOO_LARGE/);
+  assert.deepEqual(await page.evaluate(() => window.downloadCalls), ['false_123456789@c.us_MEDIA']);
   const languageMenu = { id: 'languages', text: 'Please select your language\n请选择您的语言\n請選擇您的語言', options: ['English', '简体中文', '繁体中文'].map((label, index) => ({ label, next: `language-${index}` })) };
   await sendFlow(client, reply.jid, languageMenu, 'buttons', Buffer.from([255,216,255,0]));
   const splitMenu = await page.evaluate(() => window.sent.slice(-2));
