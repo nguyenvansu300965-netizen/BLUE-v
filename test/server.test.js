@@ -66,7 +66,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     const bobAccount = legacyAccount(dataDir, bobUser.id, 'Existing Bob');
     assert.equal((await bob.request(`${base}/state`)).status, 404);
     assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
-    assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 403);
+    assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
     assert.equal((await bob.request(`${base}/connect`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
     assert.equal((await bob.request(`${base}/messages/PRIVATE/media`, { method: 'POST' })).status, 404);
@@ -254,8 +254,9 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     const existing = legacyAccount(dataDir, aliceUser.id, 'Existing self-owned');
     assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'No new self-owned' } })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${existing.id}/state`)).status, 200);
-    for (const action of ['sync', 'connect', 'logout']) assert.equal((await alice.request(`/api/accounts/${existing.id}/${action}`, { method: 'POST' })).status, 403);
+    for (const action of ['connect', 'logout']) assert.equal((await alice.request(`/api/accounts/${existing.id}/${action}`, { method: 'POST' })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${existing.id}`, { method: 'DELETE' })).status, 403);
+    assert.equal((await alice.request(`/api/accounts/${existing.id}/sync`, { method: 'POST' })).status, 409, 'sync is permitted but requires the number to be connected');
     const legacyMeta = await (await admin.request(`/api/admin/numbers/${existing.id}/state`)).json();
     assert.equal(Object.hasOwn(legacyMeta, 'messages'), false); assert.equal(legacyMeta.userId, aliceUser.id);
     assert.equal((await alice.request('/api/admin/numbers')).status, 403);

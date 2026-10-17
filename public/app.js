@@ -55,7 +55,8 @@ function updateMembership(user) {
   $('subscription-badge').textContent = user.role === 'admin' ? '超级管理员' : planNames[user.plan];
   $('subscription-bar').classList.toggle('pending', !user.active);
   $('subscription-bar').textContent = user.role === 'admin' ? '超级管理员 · 在管理后台为用户开通套餐和订阅' : user.active ? `${planNames[user.plan]} · 最多 ${user.limit} 个号码 · 有效期至 ${new Date(user.expiresAt).toLocaleString()}` : '账号待开通、已停用或订阅已到期，请联系超级管理员开通使用权限。';
-  for (const id of ['add-account', 'sync-messages', 'open-device', 'remove-account']) $(id).hidden = user.role !== 'admin';
+  for (const id of ['add-account', 'open-device', 'remove-account']) $(id).hidden = user.role !== 'admin';
+  $('sync-messages').hidden = false;
   if (user.role !== 'admin') $('device-dialog').close();
   $('add-account').disabled = user.role !== 'admin';
   $('quota').textContent = `${accounts.length} / ${user.limit} 个号码`;

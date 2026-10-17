@@ -39,8 +39,10 @@ try {
   await page.waitForFunction(() => document.getElementById('admin-numbers').textContent.includes('pool-customer'));
   const pool = store.managedAccounts()[0]; store.remember(pool.id, { id: 'PRIVATE', jid: '123456789@s.whatsapp.net', name: 'Customer', text: 'Only assigned user can see', time: Date.now() });
   await login(customer, 'pool-customer'); await customer.waitForFunction(() => Array.from(document.getElementById('account-select').options).filter(o => o.value).length === 2);
-  for (const id of ['add-account', 'sync-messages', 'open-device', 'remove-account']) assert.equal(await customer.$eval(`#${id}`, el => el.hidden), true, `legacy user control ${id} must be hidden`);
-  for (const action of ['connect', 'logout', 'sync']) assert.equal(await customer.evaluate(async ({ id, action }) => (await fetch(`/api/accounts/${id}/${action}`, { method: 'POST' })).status, { id: legacy.id, action }), 403);
+  for (const id of ['add-account', 'open-device', 'remove-account']) assert.equal(await customer.$eval(`#${id}`, el => el.hidden), true, `legacy user control ${id} must be hidden`);
+  for (const action of ['connect', 'logout']) assert.equal(await customer.evaluate(async ({ id, action }) => (await fetch(`/api/accounts/${id}/${action}`, { method: 'POST' })).status, { id: legacy.id, action }), 403);
+  assert.equal(await customer.$eval('#sync-messages', el => el.hidden), false);
+  assert.equal(await customer.$eval('#sync-messages', el => el.disabled), true, 'sync stays disabled while disconnected');
   assert.equal((await customer.evaluate(async () => (await fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'Forbidden' }) })).status)), 403);
   await customer.select('#account-select', pool.id); await customer.waitForSelector('.chat-item');
   assert.equal(await customer.$eval('#open-device', el => el.hidden), true);

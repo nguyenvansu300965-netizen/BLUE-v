@@ -206,7 +206,7 @@ accountRouter.delete('/', async (req, res) => {
   store.deleteAccount(req.account.id); runtimes.delete(req.account.id);
   reconcile(); res.json({ ok: true });
 });
-accountRouter.post('/sync', (req, res) => { if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可同步号码消息'); req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
+accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
 accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot(req.user.role)));
 accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
