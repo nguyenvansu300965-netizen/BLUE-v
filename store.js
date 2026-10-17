@@ -134,10 +134,20 @@ export class Store {
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
   messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  revokeMessage(account, id) {
+    const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
+    if (!row) return false;
+    const old = JSON.parse(row.payload);
+    const message = { id: old.id, jid: old.jid, name: old.name, outgoing: old.outgoing, time: old.time, text: '此消息已撤回', revoked: true };
+    this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(JSON.stringify(message), account, id);
+    return message;
+  }
   setMessageAttachment(account, id, attachment) {
     const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
     if (!row) return false;
-    const message = { ...JSON.parse(row.payload), attachment };
+    const old = JSON.parse(row.payload);
+    if (old.revoked) return false;
+    const message = { ...old, attachment };
     this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(JSON.stringify(message), account, id);
     return message;
   }
@@ -155,6 +165,7 @@ export class Store {
     const result = this.db.prepare('INSERT OR IGNORE INTO messages VALUES(?,?,?,?)').run(account, item.id, JSON.stringify(item), item.time);
     if (!result.changes) {
       const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
+      if (previous.revoked) return false;
       const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
       const mediaRepair = item.media && !previous.media && !previous.image && !previous.attachment;
       if (((item.automatic || item.manual) && item.outgoing) || repair || mediaRepair) {

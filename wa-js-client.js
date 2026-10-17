@@ -280,11 +280,11 @@ export class WaJsClient {
     if (!result?.id) throw new Error('WA-JS returned no message ID');
     return stanzaId(result.id);
   }
-  async sendMedia(jid, data, attachment, caption) {
-    const result = await this.page.evaluate(async ({ to, dataUrl, type, filename, mime, caption }) => {
-      const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type, filename, mimetype: mime, caption, markIsRead: false, waitForAck: true });
+  async sendMedia(jid, data, attachment, caption, voice = false) {
+    const result = await this.page.evaluate(async ({ to, dataUrl, type, filename, mime, caption, voice }) => {
+      const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type, filename, mimetype: mime, caption, ...(voice ? { isPtt: true, waveform: true } : {}), markIsRead: false, waitForAck: true });
       return { id: result.id };
-    }, { to: toWaJid(jid), dataUrl: `data:${attachment.mime};base64,${data.toString('base64')}`, type: attachment.type, filename: attachment.name, mime: attachment.mime, caption });
+    }, { to: toWaJid(jid), dataUrl: `data:${attachment.mime};base64,${data.toString('base64')}`, type: attachment.type, filename: attachment.name, mime: attachment.mime, caption, voice });
     if (!result?.id) throw new Error('WA-JS returned no message ID');
     return stanzaId(result.id);
   }
@@ -295,6 +295,20 @@ export class WaJsClient {
     }, { to: toWaJid(jid), dataUrl, caption, buttons });
     if (!result?.id) throw new Error('WA-JS returned no message ID');
     return stanzaId(result.id);
+  }
+  async forwardMessage(sourceId, jid) {
+    const failed = await this.page.evaluate(async ({ sourceId, to }) => {
+      const failed = await window.WPP.chat.forwardMessages(to, [sourceId]);
+      return Array.isArray(failed) ? failed.length : -1;
+    }, { sourceId, to: toWaJid(jid) });
+    if (failed !== 0) throw new Error('FORWARD_FAILED');
+  }
+  async revokeMessage(sourceId, jid) {
+    const revoked = await this.page.evaluate(async ({ sourceId, to }) => {
+      const result = await window.WPP.chat.deleteMessage(to, sourceId, true, true);
+      return !Array.isArray(result) && result?.isRevoked === true;
+    }, { sourceId, to: toWaJid(jid) });
+    if (!revoked) throw new Error('REVOKE_FAILED');
   }
   async logout() { if (this.page && !this.page.isClosed()) await this.page.evaluate(() => window.WPP?.conn.logout()); }
   async close() {

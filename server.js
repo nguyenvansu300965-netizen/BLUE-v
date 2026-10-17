@@ -166,8 +166,9 @@ accountRouter.post('/connect', async (req, res) => {
 });
 accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.post('/messages', async (req, res) => {
-  const { text = '', phone, jid: selectedJid, attachment: attachmentId } = req.body || {};
+  const { text = '', phone, jid: selectedJid, attachment: attachmentId, voice = false } = req.body || {};
   const attachment = attachmentId ? store.attachment(req.account.id, attachmentId) : null;
+  if (typeof voice !== 'boolean' || (voice && attachment?.type !== 'audio')) throw new AppError(400, '语音消息需要音频附件');
   if (attachmentId && !attachment) throw new AppError(400, '附件不存在，请重新选择');
   if (typeof text !== 'string' || (!text.trim() && !attachment) || text.length > 4096) throw new AppError(400, '请输入消息或选择附件，文案最多 4096 字');
   let jid;
@@ -176,10 +177,19 @@ accountRouter.post('/messages', async (req, res) => {
     jid = selectedJid;
   } else { try { jid = recipientJid(phone); } catch (error) { throw new AppError(400, error.message); } }
   req.runtime.requireConnected();
-  const id = attachment ? await req.runtime.sendMedia(jid, attachment, text.trim()) : await req.runtime.sendText(jid, text.trim());
+  const id = attachment ? await req.runtime.sendMedia(jid, attachment, text.trim(), voice) : await req.runtime.sendText(jid, text.trim());
   req.runtime.remember({ id, jid, name: jid, text: text.trim() || `[${attachment?.name || '附件'}]`, ...(attachment ? { attachment } : {}), manual: true, outgoing: true, time: Date.now() });
   res.json({ ok: true, id });
 });
+accountRouter.post('/messages/:messageId/forward', async (req, res) => {
+  let target;
+  if (req.body?.jid) {
+    target = req.body.jid;
+    if (!store.messages(req.account.id).some(m => m.jid === target)) throw new AppError(400, '请选择当前号码下的目标会话');
+  } else { try { target = recipientJid(req.body?.phone); } catch (error) { throw new AppError(400, error.message); } }
+  res.json(await req.runtime.messageAction(req.params.messageId, 'forward', target));
+});
+accountRouter.post('/messages/:messageId/revoke', async (req, res) => res.json(await req.runtime.messageAction(req.params.messageId, 'revoke')));
 accountRouter.post('/messages/:messageId/media', async (req, res) => res.json({ message: await req.runtime.downloadMessageMedia(req.params.messageId) }));
 const mediaTypes = {
   'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'image/gif': 'image',

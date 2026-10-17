@@ -176,3 +176,40 @@ test('incoming full-resolution media are cached per account and downloads dedupl
     await assert.rejects(rt.downloadMessageMedia('foreign-message'), /消息不存在/);
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+
+test('forward/revoke use only account-owned messages and persist revocation only after confirmed success', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-actions-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('actions-admin', '123456'); const user = store.byName('actions-admin');
+    const account = store.createAccount(user.id, 'One'), other = store.createAccount(user.id, 'Other');
+    rt = await new WhatsAppAccount(account, store, dir).init();
+    rt.state.status = 'connected'; rt.state.user = { id: '123456789@s.whatsapp.net' };
+    const calls = []; let fail = false;
+    rt.syncMessages = async () => {};
+    rt.client = { close: async () => {}, forwardMessage: async (...args) => { calls.push(['forward', ...args]); if (fail) throw Error(); }, revokeMessage: async (...args) => { calls.push(['revoke', ...args]); if (fail) throw Error(); }, sendMedia: async (...args) => { calls.push(['media', ...args]); return 'VOICE'; } };
+    const message = { id: 'OWN', jid: '987654321@s.whatsapp.net', text: 'hello', outgoing: true, time: Date.now() };
+    store.remember(account.id, message);
+    store.remember(account.id, { ...message, id: 'IN', outgoing: false });
+    store.remember(other.id, { ...message, id: 'FOREIGN' });
+    await assert.rejects(rt.messageAction('FOREIGN', 'revoke'), /消息不存在/);
+    await assert.rejects(rt.messageAction('IN', 'revoke'), /只能撤回/);
+    await assert.rejects(rt.messageAction('OWN', 'forward', 'invalid'), /目标无效/);
+    assert.equal(calls.length, 0);
+    await rt.messageAction('IN', 'forward', '123456789@s.whatsapp.net');
+    assert.deepEqual(calls[0], ['forward', 'false_987654321@c.us_IN', '123456789@s.whatsapp.net']);
+    fail = true;
+    await assert.rejects(rt.messageAction('OWN', 'revoke'), /撤回失败/);
+    assert.equal(store.messages(account.id).find(m => m.id === 'OWN').text, 'hello');
+    await assert.rejects(rt.messageAction('IN', 'forward', '123456789@s.whatsapp.net'), /转发失败/);
+    fail = false; await rt.messageAction('OWN', 'revoke');
+    assert.equal(store.messages(account.id).find(m => m.id === 'OWN').revoked, true);
+    assert.equal(store.setMessageAttachment(account.id, 'OWN', { id: 'late-download' }), false, 'a pending media download must not restore revoked content');
+    store.remember(account.id, { ...message, manual: true });
+    assert.equal(store.messages(account.id).find(m => m.id === 'OWN').text, '此消息已撤回');
+    await assert.rejects(rt.messageAction('OWN', 'forward', '123456789@s.whatsapp.net'), /已撤回/);
+    await mkdir(rt.mediaDir, { recursive: true }); await writeFile(path.join(rt.mediaDir, 'voice.bin'), 'fixture');
+    await rt.sendMedia(message.jid, { id: 'voice', type: 'audio', mime: 'audio/webm' }, '', true);
+    assert.equal(calls.at(-1).at(-1), true, 'recorded audio sends as PTT');
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
+});

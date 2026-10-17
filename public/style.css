@@ -5,3 +5,5 @@
 .attachment-draft{font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.message-media{display:block;max-width:100%;width:320px;max-height:320px}.message-download{display:block;color:#007c66;font-size:12px;padding:8px 0;overflow-wrap:anywhere}#password-dialog input{width:100%;margin:8px 0}#password-dialog .flow-toolbar{margin-top:14px}#password-notice{font-size:13px}.composer textarea{min-width:0}.composer .icon-button{flex-shrink:0}
 
 .template-editor{margin-top:20px;padding:18px;border:1px solid #a7d7c5;border-radius:10px;background:#e5f1eb}.template-editor p{font-size:13px;margin:8px 0}.template-editor input{display:block;width:100%;margin-top:8px}
+
+.message-actions{display:flex;gap:10px;margin-top:6px}.message-actions button{font-size:12px;padding:3px 6px}#forward-dialog label{display:block;margin:12px 0}#forward-dialog select,#forward-dialog input{display:block;width:100%;margin-top:6px}

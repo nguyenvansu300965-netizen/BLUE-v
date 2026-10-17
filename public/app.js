@@ -2,7 +2,8 @@ const $ = id => document.getElementById(id);
 const planNames = { basic: '基础套餐', pro: '高级套餐', vip: 'VIP 套餐' };
 const statusNames = { idle: '未连接', connecting: '连接中', qr: '等待扫码', connected: '已连接', disconnected: '重连中', logged_out: '已退出', blocked: '权限受限', error: '连接失败' };
 let me = null, accounts = [], selectedAccount = '', selectedThread = '', draftPhone = '', messages = [], stream = null, registration = false, sending = false, connected = false;
-let attachmentDraft = null, passwordTarget = null;
+let attachmentDraft = null, passwordTarget = null, forwardDraft = null;
+let voiceRecorder = null, voiceStream = null, voiceTimer = null, recordingToken = 0;
 let accountsRequest = 0, creatingAccount = false;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
@@ -214,6 +215,24 @@ function renderMessages() {
       for (const option of message.buttons) { const label = document.createElement('span'); label.textContent = option.label; choices.append(label); }
       bubble.append(choices);
     }
+    if (!message.revoked) {
+      const actions = document.createElement('div'); actions.className = 'message-actions';
+      const forward = document.createElement('button'); forward.type = 'button'; forward.className = 'quiet'; forward.textContent = '转发'; forward.disabled = !connected;
+      forward.onclick = () => openForward(message); actions.append(forward);
+      if (message.outgoing) {
+        const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'quiet'; revoke.textContent = '撤回'; revoke.disabled = !connected;
+        revoke.onclick = async () => {
+          if (!confirm('撤回这条消息？对方将无法再在聊天中查看。')) return;
+          const epoch = authEpoch, account = selectedAccount; revoke.disabled = true;
+          try {
+            await api(`/api/accounts/${account}/messages/${encodeURIComponent(message.id)}/revoke`, { method: 'POST' });
+            if (epoch !== authEpoch || account !== selectedAccount) return;
+            messages = messages.map(m => m.id === message.id ? { id: m.id, jid: m.jid, name: m.name, outgoing: m.outgoing, time: m.time, text: '此消息已撤回', revoked: true } : m); renderChats(); renderMessages();
+          } catch (error) { if (epoch === authEpoch && account === selectedAccount) { revoke.disabled = false; notice(error.message); } }
+        }; actions.append(revoke);
+      }
+      bubble.append(actions);
+    }
     bubble.append(time); area.append(bubble);
   }
   if (nearBottom) area.scrollTop = area.scrollHeight;
@@ -281,6 +300,7 @@ $('chat-search').oninput = renderChats;
 $('chat-name').parentElement.parentElement.onclick = () => $('page-chat').classList.remove('chat-open');
 $('text').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send').disabled) $('send-form').requestSubmit(); } };
 function clearAttachment() {
+  cancelRecording();
   attachmentDraft = null; $('chat-file').value = ''; $('attachment-draft').hidden = true; $('attachment-draft').textContent = ''; $('clear-attachment').hidden = true;
 }
 $('attach-file').onclick = () => {
@@ -295,19 +315,19 @@ $('chat-file').onchange = () => {
   $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
 };
 $('send-form').onsubmit = async event => {
-  event.preventDefault(); if (sending || !connected || !selectedAccount || !selectedThread) return;
+  event.preventDefault(); if (voiceRecorder || voiceStream) return notice('请先停止录音'); if (sending || !connected || !selectedAccount || !selectedThread) return;
   const id = selectedAccount, jid = selectedThread, text = $('text').value, draft = attachmentDraft, epoch = authEpoch;
   if (!text.trim() && !draft) return notice('请输入消息或选择附件');
   const existing = messages.some(m => m.jid === jid), phone = draftPhone;
   sending = true; $('send').disabled = true; $('attach-file').disabled = true; $('clear-attachment').disabled = true;
   try {
     if (draft && !draft.uploaded) {
-      const query = new URLSearchParams({ name: draft.file.name, mime: draft.file.type || 'application/octet-stream' });
+      const query = new URLSearchParams({ name: draft.file.name, mime: draft.file.type.split(';')[0] || 'application/octet-stream' });
       const result = await api(`/api/accounts/${id}/attachments?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: draft.file });
       draft.uploaded = result.attachment;
     }
     if (epoch !== authEpoch) return;
-    await api(`/api/accounts/${id}/messages`, { method: 'POST', body: JSON.stringify({ text, ...(draft ? { attachment: draft.uploaded.id } : {}), ...(existing ? { jid } : { phone }) }) });
+    await api(`/api/accounts/${id}/messages`, { method: 'POST', body: JSON.stringify({ text, ...(draft ? { attachment: draft.uploaded.id, voice: Boolean(draft.voice) } : {}), ...(existing ? { jid } : { phone }) }) });
     if (epoch === authEpoch && id === selectedAccount && jid === selectedThread) { if ($('text').value === text) $('text').value = ''; if (draft === attachmentDraft) clearAttachment(); }
   } catch (error) { if (epoch === authEpoch) notice(error.message); }
   finally { sending = false; $('send').disabled = !connected || !selectedThread; $('attach-file').disabled = false; $('clear-attachment').disabled = false; }
@@ -384,3 +404,67 @@ $('admin-refresh').onclick = loadAdmin;
 setInterval(() => { if (me) void refreshAccounts().catch(error => notice(error.message)); }, 15000);
 const bootEpoch = authEpoch;
 void api('/api/auth/me').then(result => { if (bootEpoch === authEpoch) return enter(result.user); }).catch(() => { if (bootEpoch === authEpoch) showAuth(); });
+
+function closeForward() { forwardDraft = null; $('forward-dialog').close(); $('forward-phone').value = ''; }
+function openForward(message) {
+  forwardDraft = { id: message.id, account: selectedAccount, epoch: authEpoch };
+  $('forward-target').replaceChildren(new Option('输入新号码', ''));
+  for (const thread of threads()) $('forward-target').add(new Option(thread.name, thread.jid));
+  $('forward-phone').value = ''; $('forward-error').textContent = ''; $('forward-confirm').disabled = false; $('forward-dialog').showModal();
+}
+$('forward-cancel').onclick = closeForward;
+$('forward-dialog').addEventListener('cancel', closeForward);
+$('forward-confirm').onclick = async () => {
+  const draft = forwardDraft; if (!draft) return;
+  $('forward-confirm').disabled = true;
+  try {
+    const phone = $('forward-phone').value.trim(), jid = $('forward-target').value;
+    await api(`/api/accounts/${draft.account}/messages/${encodeURIComponent(draft.id)}/forward`, { method: 'POST', body: JSON.stringify(phone ? { phone } : { jid }) });
+    if (draft.epoch !== authEpoch || draft.account !== selectedAccount) return;
+    closeForward(); notice('消息已转发');
+  } catch (error) { if (draft === forwardDraft) { $('forward-error').textContent = error.message; $('forward-confirm').disabled = false; } }
+};
+function cancelRecording() {
+  recordingToken++; clearTimeout(voiceTimer); voiceTimer = null;
+  if (voiceRecorder) { voiceRecorder.onstop = null; if (voiceRecorder.state !== 'inactive') voiceRecorder.stop(); }
+  voiceStream?.getTracks().forEach(track => track.stop()); voiceStream = null; voiceRecorder = null;
+  $('record-voice').textContent = '🎙'; $('record-voice').setAttribute('aria-label', '录制语音');
+}
+window.addEventListener('account-changed', () => { cancelRecording(); closeForward(); });
+$('send-video').onclick = () => { if (!connected || !selectedThread || sending) return notice('请先连接号码并选择聊天'); $('video-file').click(); };
+$('video-file').onchange = () => {
+  const file = $('video-file').files[0]; $('video-file').value = '';
+  if (!file) return;
+  if (!['video/mp4', 'video/webm'].includes(file.type) || !file.size || file.size > 20 * 1024 * 1024) return notice('请选择 MP4 或 WebM 视频，最大 20MB');
+  clearAttachment(); attachmentDraft = { file, uploaded: null };
+  $('attachment-draft').textContent = `视频：${file.name}`; $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
+};
+$('record-voice').onclick = async () => {
+  if (voiceRecorder?.state === 'recording') { voiceRecorder.stop(); return; }
+  if (!connected || !selectedThread || sending) return notice('请先连接号码并选择聊天');
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return notice('此浏览器不支持录音，请使用 HTTPS 下的 Chrome 或 Edge');
+  clearAttachment(); const token = recordingToken, epoch = authEpoch, account = selectedAccount, thread = selectedThread;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (token !== recordingToken || epoch !== authEpoch || account !== selectedAccount || thread !== selectedThread) { stream.getTracks().forEach(t => t.stop()); return; }
+    voiceStream = stream;
+    const mime = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type));
+    if (!mime) throw new Error('浏览器不支持可发送的录音格式，请上传音频文件');
+    const chunks = []; let size = 0; const recorder = voiceRecorder = new MediaRecorder(stream, { mimeType: mime });
+    recorder.ondataavailable = event => { if (event.data.size) { chunks.push(event.data); size += event.data.size; if (size > 20 * 1024 * 1024) { cancelRecording(); notice('录音超过 20MB，请重新录制'); } } };
+    recorder.onerror = () => { cancelRecording(); notice('录音失败，请重试'); };
+    recorder.onstop = () => {
+      if (token !== recordingToken) return;
+      const valid = epoch === authEpoch && account === selectedAccount && thread === selectedThread;
+      cancelRecording(); if (!valid || !size) return;
+      const type = mime.split(';')[0], ext = type === 'audio/ogg' ? 'ogg' : type === 'audio/mp4' ? 'm4a' : 'webm';
+      const file = new File(chunks, `语音-${Date.now()}.${ext}`, { type });
+      attachmentDraft = { file, voice: true, uploaded: null };
+      $('attachment-draft').textContent = `语音已录制 · ${(file.size / 1024).toFixed(0)}KB，点击发送`;
+      $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
+    };
+    recorder.start(1000); $('record-voice').textContent = '■'; $('record-voice').setAttribute('aria-label', '停止录音');
+    notice('正在录音，点击 ■ 停止；停止后点击发送'); voiceTimer = setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 5 * 60 * 1000);
+  } catch (error) { if (token === recordingToken) { cancelRecording(); notice(error.name === 'NotAllowedError' ? '请允许浏览器使用麦克风' : error.message); } }
+};
+window.addEventListener('pagehide', cancelRecording);

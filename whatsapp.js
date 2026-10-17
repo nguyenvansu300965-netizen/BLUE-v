@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeWaMessage, toStoredJid } from './messages.js';
+import { normalizeWaMessage, toStoredJid, toWaJid } from './messages.js';
 import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
@@ -228,11 +228,30 @@ export class WhatsAppAccount {
     void task.finally(() => this.mediaDownloads.delete(id)).catch(() => {});
     return task;
   }
-  async sendMedia(jid, attachment, caption) {
+  async sendMedia(jid, attachment, caption, voice = false) {
     this.requireConnected();
     const data = await readFile(path.join(this.mediaDir, `${attachment.id}.bin`));
     this.requireConnected();
-    return this.client.sendMedia(jid, data, attachment, caption);
+    return this.client.sendMedia(jid, data, attachment, caption, voice);
+  }
+  async messageAction(id, action, target) {
+    this.requireConnected();
+    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    if (!message) throw new AppError(404, '消息不存在');
+    if (message.revoked) throw new AppError(400, '消息已撤回');
+    const source = message.sourceId || message.media?.sourceId || `${Boolean(message.outgoing)}_${toWaJid(message.jid)}_${message.id}`;
+    if (action === 'revoke') {
+      if (!message.outgoing) throw new AppError(400, '只能撤回自己发送的消息');
+      try { await this.client.revokeMessage(source, message.jid); }
+      catch { throw new AppError(400, '撤回失败，消息可能已超过 WhatsApp 允许的时限'); }
+      this.store.revokeMessage(this.account.id, id); this.broadcast();
+    } else if (action === 'forward') {
+      if (typeof target !== 'string' || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(target)) throw new AppError(400, '转发目标无效');
+      try { await this.client.forwardMessage(source, target); }
+      catch { throw new AppError(400, '转发失败，此消息可能不支持转发或尚未同步'); }
+      void this.syncMessages().catch(() => {});
+    } else throw new AppError(400, '不支持的消息操作');
+    return { ok: true };
   }
   async sendText(jid, text) {
     this.requireConnected();

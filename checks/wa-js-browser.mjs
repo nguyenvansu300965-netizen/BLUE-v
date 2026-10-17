@@ -117,6 +117,19 @@ try {
     assert.equal(sent.data, `data:${mime};base64,${Buffer.from('fixture').toString('base64')}`);
   }
   const mediaBytes = Buffer.from([137,80,78,71,13,10,26,10]);
+  await client.sendMedia(reply.jid, Buffer.from('voice'), { type: 'audio', mime: 'audio/webm', name: 'voice.webm' }, '', true);
+  assert.equal(await page.evaluate(() => window.sent.at(-1).options.isPtt), true);
+  await page.evaluate(() => {
+    window.WPP.chat.forwardMessages = async (to, ids) => { window.forwarded = { to, ids }; return []; };
+    window.WPP.chat.deleteMessage = async (to, id, deleteMedia, revoke) => { window.revoked = { to, id, deleteMedia, revoke }; return { isRevoked: true }; };
+  });
+  await client.forwardMessage('false_123456789@c.us_SOURCE', '447700900123@s.whatsapp.net');
+  assert.deepEqual(await page.evaluate(() => window.forwarded), { to: '447700900123@c.us', ids: ['false_123456789@c.us_SOURCE'] });
+  await client.revokeMessage('true_123456789@c.us_SOURCE', '123456789@s.whatsapp.net');
+  assert.deepEqual(await page.evaluate(() => window.revoked), { to: '123456789@c.us', id: 'true_123456789@c.us_SOURCE', deleteMedia: true, revoke: true });
+  await page.evaluate(() => { window.WPP.chat.forwardMessages = async () => ['failed']; window.WPP.chat.deleteMessage = async () => ({ isRevoked: false }); });
+  await assert.rejects(client.forwardMessage('source', reply.jid), /FORWARD_FAILED/);
+  await assert.rejects(client.revokeMessage('source', reply.jid), /REVOKE_FAILED/);
   await page.evaluate(bytes => {
     window.downloadCalls = [];
     window.WPP.chat.getMessageById = async () => ({ size: bytes.length, mimetype: 'image/png' });

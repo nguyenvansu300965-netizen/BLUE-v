@@ -44,6 +44,6 @@ export function normalizeWaMessage(raw) {
   const buttons = Array.isArray(raw.buttons) ? raw.buttons.filter(b => typeof b?.label === 'string').slice(0, 3).map(b => ({ label: b.label.slice(0, 100) })) : [];
 
   const mediaInfo = mediaKind ? { type: mediaKind, sourceId: typeof raw.sourceId === 'string' && /^(true|false)_[^_]+_.+/.test(raw.sourceId) ? raw.sourceId : `${Boolean(raw.fromMe)}_${raw.chatId}_${id}`, mime: typeof raw.mime === 'string' ? raw.mime.slice(0, 120) : '', name: typeof raw.filename === 'string' ? raw.filename.slice(0, 200) : '', size: Number.isFinite(raw.size) && raw.size > 0 ? raw.size : 0 } : undefined;
-  return { id, jid, ...(mediaInfo ? { media: mediaInfo } : {}), name: String(raw.name || jid).slice(0, 200), thumbnail, buttons, text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), history: Boolean(raw.history), time: Number(raw.timestamp || 0) * 1000,
+  return { id, jid, ...(typeof raw.sourceId === 'string' && /^(true|false)_[^_]+_.+/.test(raw.sourceId) ? { sourceId: raw.sourceId } : {}), ...(mediaInfo ? { media: mediaInfo } : {}), name: String(raw.name || jid).slice(0, 200), thumbnail, buttons, text: String(text).slice(0, 16000), outgoing: Boolean(raw.fromMe), history: Boolean(raw.history), time: Number(raw.timestamp || 0) * 1000,
     selection: typeof selection === 'string' ? selection : undefined, quotedId: stanzaId(raw.quotedId) };
 }

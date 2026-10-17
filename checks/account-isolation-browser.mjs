@@ -14,7 +14,7 @@ try {
     service.once('exit', code => reject(new Error(`Test server exited: ${code}`)));
   });
   const base = `http://127.0.0.1:${port}`;
-  browser = await puppeteer.launch({ executablePath: await browserExecutable(), headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  browser = await puppeteer.launch({ executablePath: await browserExecutable(), headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   const page = await browser.newPage(); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   async function request(page, url, method = 'GET', body) {
@@ -120,6 +120,62 @@ try {
   await page.click('.chat-item');
   assert.equal(await page.$eval('.bubble audio', el => el.controls), true);
   assert.ok(!(await page.$eval('.bubble', el => el.textContent)).includes('[语音]'));
+
+  // Exercise browser microphone recording, upload, PTT request, forwarding and revoke UI.
+  await page.evaluate(async ({ id, incoming }) => {
+    closeStream(); const state = await (await fetch(`/api/accounts/${id}/state`)).json();
+    renderState({ ...state, status: 'connected', user: { id: '123456789@s.whatsapp.net' }, messages: [incoming, { ...incoming, id: 'outgoing-action', outgoing: true, text: 'Own outgoing', media: undefined }] });
+  }, { id: created.id, incoming });
+  await page.click('.chat-item');
+  await page.click('#record-voice');
+  await page.waitForFunction(() => document.getElementById('record-voice').getAttribute('aria-label') === '停止录音');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1200)));
+  await page.click('#record-voice');
+  await page.waitForFunction(() => attachmentDraft?.voice === true);
+  assert.equal(await page.evaluate(() => voiceStream), null, 'microphone tracks released after stop');
+  assert.ok(await page.evaluate(() => attachmentDraft.file.size > 0));
+  let voiceRequest, forwardRequest, revokeCount = 0;
+  page.removeAllListeners('request');
+  page.on('request', req => {
+    const path = new URL(req.url()).pathname;
+    if (req.method() === 'POST' && path.endsWith('/messages')) {
+      voiceRequest = JSON.parse(req.postData()); void req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'VOICE-SENT' }) });
+    } else if (path.endsWith('/forward')) {
+      forwardRequest = JSON.parse(req.postData()); void req.respond({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    } else if (path.endsWith('/revoke')) {
+      revokeCount++; void req.respond({ status: revokeCount === 1 ? 400 : 200, contentType: 'application/json', body: JSON.stringify(revokeCount === 1 ? { error: '撤回失败，超过时限' } : { ok: true }) });
+    } else void req.continue();
+  });
+  await page.click('#send');
+  await page.waitForFunction(() => attachmentDraft === null);
+  assert.equal(voiceRequest.voice, true); assert.match(voiceRequest.attachment, /^[a-f0-9]{32}$/);
+  await page.click('.bubble .message-actions button');
+  await page.waitForSelector('#forward-dialog[open]');
+  await page.type('#forward-phone', '447700900123'); await page.click('#forward-confirm');
+  await page.waitForFunction(() => !document.getElementById('forward-dialog').open);
+  assert.deepEqual(forwardRequest, { phone: '447700900123' });
+  assert.equal(await page.$$eval('.bubble:not(.outgoing) .message-actions button', els => els.length), 1, 'incoming messages cannot be revoked');
+  page.once('dialog', dialog => dialog.accept());
+  await page.click('.bubble.outgoing .message-actions button:last-child');
+  await page.waitForFunction(() => document.getElementById('notice').textContent.includes('超过时限'));
+  assert.ok((await page.$eval('.bubble.outgoing', el => el.textContent)).includes('Own outgoing'));
+  page.once('dialog', dialog => dialog.accept());
+  await page.click('.bubble.outgoing .message-actions button:last-child');
+  await page.waitForFunction(() => document.querySelector('.bubble.outgoing')?.textContent.includes('此消息已撤回'));
+  assert.equal(await page.$$eval('.bubble.outgoing .message-actions', els => els.length), 0);
+  await page.click('#record-voice');
+  await page.waitForFunction(() => voiceRecorder?.state === 'recording');
+  await page.evaluate(() => clearAttachment());
+  assert.equal(await page.evaluate(() => voiceRecorder), null, 'cancelling draft releases recording');
+
+  await page.evaluate(() => {
+    const files = new DataTransfer(); files.items.add(new File(['video-fixture'], 'clip.mp4', { type: 'video/mp4' }));
+    document.getElementById('video-file').files = files.files; document.getElementById('video-file').dispatchEvent(new Event('change'));
+  });
+  assert.equal(await page.evaluate(() => attachmentDraft.file.type), 'video/mp4');
+  await page.click('#send');
+  await page.waitForFunction(() => attachmentDraft === null);
+  assert.equal(voiceRequest.voice, false, 'video is sent as a normal video attachment');
 
   const registered = await request(page, '/api/auth/register', 'POST', { username: 'isolated-user', password: '123456' });
   await request(page, `/api/admin/users/${registered.data.user.id}`, 'PATCH', { enabled: true, plan: 'basic', expiresAt: new Date(Date.now() + 86400000).toISOString() });
