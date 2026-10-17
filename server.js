@@ -96,24 +96,33 @@ app.get('/api/auth/me', (req, res) => res.json({ user: store.publicUser(req.user
 app.use('/api/admin', (req, res, next) => { if (req.user.role !== 'admin') throw new AppError(403, '仅超级管理员可操作'); next(); });
 const poolView = account => {
   const rt = runtimes.get(account.id);
-  return { id: account.id, label: account.label, managed: account.managed, userId: account.managed === 2 ? account.user_id : null, username: account.managed === 2 ? store.user(account.user_id)?.username : null, status: rt?.state.status || 'idle', number: rt?.state.user?.phoneNumber || '', allowed: store.allowed(account) };
+  return { id: account.id, label: account.label, managed: account.managed, userId: account.managed !== 1 ? account.user_id : null, username: account.managed !== 1 ? store.user(account.user_id)?.username : null, status: rt?.state.status || 'idle', number: rt?.state.user?.phoneNumber || '', allowed: store.allowed(account) };
 };
-app.get('/api/admin/numbers', (req, res) => res.json({ accounts: store.managedAccounts().map(poolView) }));
+app.get('/api/admin/numbers', (req, res) => res.json({ accounts: store.db.prepare('SELECT * FROM accounts ORDER BY created_at,id').all().map(poolView) }));
 app.post('/api/admin/numbers', (req, res) => res.status(201).json({ account: poolView(store.createManaged(req.user.id, req.body?.label)) }));
 app.get('/api/admin/numbers/:id/state', async (req, res) => {
-  const account = store.account(req.params.id); if (!account?.managed) throw new AppError(404, '托管号码不存在');
-  const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed === 1 ? rt.state.qr : null, error: rt.state.error, progress: rt.state.progress });
+  const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
+  const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed !== 2 ? rt.state.qr : null, error: rt.state.error, progress: rt.state.progress });
 });
 app.post('/api/admin/numbers/:id/connect', async (req, res) => {
-  const account = store.account(req.params.id); if (account?.managed !== 1) throw new AppError(400, '请先收回号码再管理连接');
+  const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再管理连接');
   const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
   void rt.connect().catch(() => {}); res.status(202).json({ ok: true });
 });
+app.post('/api/admin/numbers/:id/sync', async (req, res) => {
+  const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
+  const rt = await runtime(account); rt.requireConnected(); void rt.syncMessages().catch(() => {}); res.status(202).json({ ok: true });
+});
+app.post('/api/admin/numbers/:id/logout', async (req, res) => {
+  const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再重置');
+  const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
+  await rt.reset(); res.json({ ok: true });
+});
 app.delete('/api/admin/numbers/:id', async (req, res) => {
-  const account = store.account(req.params.id); if (account?.managed !== 1) throw new AppError(400, '请先收回号码再删除');
+  const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再删除');
   const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
   rt.handover = true;
-  try { await rt.stop(); await rm(rt.dir, { recursive: true, force: true }); store.deleteAccount(account.id); runtimes.delete(account.id); }
+  try { await rt.stop(); await rm(rt.dir, { recursive: true, force: true }); store.deleteAccount(account.id); rt.broadcast(); runtimes.delete(account.id); }
   finally { rt.handover = false; }
   res.json({ ok: true });
 });
@@ -190,30 +199,32 @@ app.use('/api/accounts/:id', async (req, res, next) => {
 });
 const accountRouter = express.Router({ mergeParams: true });
 accountRouter.delete('/', async (req, res) => {
+  if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码');
   if (req.account.managed) throw new AppError(403, '托管号码请联系管理员收回');
   await req.runtime.stop();
   await rm(req.runtime.dir, { recursive: true, force: true });
   store.deleteAccount(req.account.id); runtimes.delete(req.account.id);
   reconcile(); res.json({ ok: true });
 });
-accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
-accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot()));
+accountRouter.post('/sync', (req, res) => { if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可同步号码消息'); req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
+accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot(req.user.role)));
 accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
   res.flushHeaders();
-  const rt = req.runtime;
+  const rt = req.runtime; res.workspaceRole = req.user.role;
   rt.clients.set(res, () => store.session(req.sessionToken)?.id === req.user.id && store.canAccess(req.user.id, req.account) && store.allowed(req.account));
-  res.write(`data: ${JSON.stringify(rt.snapshot())}\n\n`);
+  res.write(`data: ${JSON.stringify(rt.snapshot(req.user.role))}\n\n`);
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
   res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
 });
 accountRouter.post('/connect', async (req, res) => {
+  if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码');
   if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接');
   if (req.body?.restart === true) await req.runtime.stop();
   void req.runtime.connect().catch(() => req.runtime.stop('blocked'));
   res.status(202).json({ ok: true });
 });
-accountRouter.post('/logout', async (req, res) => { if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接'); await req.runtime.reset(); res.json({ ok: true }); });
+accountRouter.post('/logout', async (req, res) => { if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码'); if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接'); await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.patch('/contacts', (req, res) => {
   const { jid, remark, readAt } = req.body || {};
   if (typeof jid !== 'string' || !store.messages(req.account.id).some(m => m.jid === jid)) throw new AppError(404, '会话不存在');

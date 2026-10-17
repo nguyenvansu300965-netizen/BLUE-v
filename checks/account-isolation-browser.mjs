@@ -240,7 +240,8 @@ try {
   assert.equal(await page.$$eval('.chat-item', elements => elements.length), 0);
   assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private contact A'));
   assert.ok(!(await page.$eval('#workspace', element => element.textContent)).includes('Private preview A'));
-  assert.equal((await request(page, `/api/accounts/${ownedB.id}`, 'DELETE')).status, 200);
+  assert.equal((await request(page, `/api/accounts/${ownedB.id}`, 'DELETE')).status, 403);
+  { const fixture = new Store(dir); fixture.deleteAccount(ownedB.id); fixture.close(); }
   await page.click('#signout'); await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
   await signInHere('isolation-admin');
   await page.waitForFunction(() => document.getElementById('account-select').value.length > 0);

@@ -47,11 +47,11 @@ export class WhatsAppAccount {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected' || !this.state.user?.id) throw new AppError(409, '请先扫码连接此号码');
   }
-  snapshot() { return { ...this.state, account: this.account, messages: this.store.messages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
+  snapshot(role = 'admin') { return { ...this.state, ...(role !== 'admin' ? { qr: null } : {}), account: this.account, messages: this.store.messages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
     for (const [response, valid] of this.clients) {
       if (!valid()) { response.write('event: revoked\ndata: {}\n\n'); response.end(); this.clients.delete(response); continue; }
-      response.write(`data: ${JSON.stringify(this.snapshot())}\n\n`);
+      response.write(`data: ${JSON.stringify(this.snapshot(response.workspaceRole))}\n\n`);
     }
   }
   update(patch) { this.state = { ...this.state, ...patch }; this.broadcast(); }

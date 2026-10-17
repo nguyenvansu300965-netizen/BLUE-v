@@ -22,6 +22,8 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     await a.connect(); await b.connect();
     assert.notEqual(a.profileDir, b.profileDir);
     await events[0]({ type: 'qr', code: 'test-only-qr' }); assert.match(a.state.qr, /^data:image\/png;base64,/); assert.equal(b.state.qr, null);
+    assert.equal(a.snapshot('user').qr, null, 'ordinary workspaces never receive device QR credentials');
+    assert.equal(a.snapshot('admin').qr, a.state.qr);
     await events[0]({ type: 'state', status: 'connected', user: { id: '123456789@c.us' } });
     await access(a.sessionMarker);
     a.config = { enabled: true, mode: 'buttons', nodes: [{ id: 'start', name: 'Welcome', triggers: ['hi'], text: 'Dear user {full_name}, hello! {phone_number}', image: '', options: [{ label: 'Next', next: 'next' }] }, { id: 'next', name: 'Next', triggers: [], text: 'Done', image: '', options: [] }] };

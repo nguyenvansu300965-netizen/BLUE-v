@@ -55,7 +55,8 @@ function updateMembership(user) {
   $('subscription-badge').textContent = user.role === 'admin' ? '超级管理员' : planNames[user.plan];
   $('subscription-bar').classList.toggle('pending', !user.active);
   $('subscription-bar').textContent = user.role === 'admin' ? '超级管理员 · 在管理后台为用户开通套餐和订阅' : user.active ? `${planNames[user.plan]} · 最多 ${user.limit} 个号码 · 有效期至 ${new Date(user.expiresAt).toLocaleString()}` : '账号待开通、已停用或订阅已到期，请联系超级管理员开通使用权限。';
-  $('add-account').hidden = user.role !== 'admin';
+  for (const id of ['add-account', 'sync-messages', 'open-device', 'remove-account']) $(id).hidden = user.role !== 'admin';
+  if (user.role !== 'admin') $('device-dialog').close();
   $('add-account').disabled = user.role !== 'admin';
   $('quota').textContent = `${accounts.length} / ${user.limit} 个号码`;
 }
@@ -80,8 +81,8 @@ async function refreshAccounts(preferredId) {
   // Excess accounts can still be removed from the list using the delete action.
   const currentAccount = accounts.find(a => a.id === selectedAccount);
   $('remove-account').disabled = !accounts.length || Boolean(currentAccount?.managed);
-  $('open-device').hidden = Boolean(currentAccount?.managed);
-  $('remove-account').hidden = Boolean(currentAccount?.managed);
+  $('open-device').hidden = me?.role !== 'admin' || Boolean(currentAccount?.managed);
+  $('remove-account').hidden = me?.role !== 'admin' || Boolean(currentAccount?.managed);
   return true;
 }
 async function enter(user) {
@@ -91,7 +92,7 @@ async function enter(user) {
 }
 function switchAccount() {
   const managed = Boolean(accounts.find(a => a.id === selectedAccount)?.managed);
-  $('open-device').hidden = managed; $('remove-account').hidden = managed;
+  $('open-device').hidden = me?.role !== 'admin' || managed; $('remove-account').hidden = me?.role !== 'admin' || managed;
   resetChatExtras();
   $('self-number').hidden = true; $('self-number').textContent = '';
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
@@ -110,7 +111,7 @@ function switchAccount() {
 function renderState(state) {
   if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;
   if (state.status === 'connected' && !/^[0-9]+@(s\.whatsapp\.net|c\.us|lid)$/.test(state.user?.id || '')) state = { ...state, status: 'connecting', user: null, progress: '正在核实 WhatsApp 登录身份，尚未取得当前号码…' };
-  $('open-device').hidden = Boolean(state.account.managed); $('remove-account').hidden = Boolean(state.account.managed);
+  $('open-device').hidden = me?.role !== 'admin' || Boolean(state.account.managed); $('remove-account').hidden = me?.role !== 'admin' || Boolean(state.account.managed);
   connectionStatus = state.status;
   const oldIds = new Set(messages.map(m => m.id));
   const newMessages = (state.messages || []).filter(m => !oldIds.has(m.id) && !m.outgoing && !m.revoked && m.time > Date.now() - 120000);
@@ -170,7 +171,7 @@ function renderChats() {
   const list = threads().filter(t => `${t.name} ${t.wsName} ${t.phone} ${t.jid} ${t.last.text}`.toLowerCase().includes(filter));
   $('chat-list').replaceChildren();
   if (!list.length) {
-    const empty = document.createElement('div'); empty.className = 'empty-list'; empty.textContent = !selectedAccount ? '选择或添加 WhatsApp 号码，开启你的第一段对话。' : '还没有会话。连接号码后接收消息，或点击 ＋ 开始新会话。'; $('chat-list').append(empty);
+    const empty = document.createElement('div'); empty.className = 'empty-list'; empty.textContent = !selectedAccount ? (me?.role === 'admin' ? '请在号码管理页添加并分配 WhatsApp 号码。' : '暂无可用号码，请联系管理员分配号码或检查订阅。') : '还没有会话。连接号码后接收消息，或点击 ＋ 开始新会话。'; $('chat-list').append(empty);
   }
   for (const thread of list) {
     const button = document.createElement('button'); button.className = `chat-item${thread.jid === selectedThread ? ' active' : ''}${thread.unread ? ' has-unread' : ''}`;
@@ -198,7 +199,9 @@ function renderMessages() {
   $('send').disabled = !connected || !selectedThread || sending;
   const area = $('messages');
   if (!selectedThread) {
-    area.innerHTML = '<div class="chat-welcome"><div class="welcome-icon">☏</div><h2>让沟通更进一步</h2><p>添加 WhatsApp 号码，扫码关联设备<br>在这里接收客户消息、配置自动回复。</p><small>仅限本人或获授权的 WhatsApp 账号</small></div>'; return;
+    area.innerHTML = '<div class="chat-welcome"><div class="welcome-icon">☏</div><h2>让沟通更进一步</h2><p>添加 WhatsApp 号码，扫码关联设备<br>在这里接收客户消息、配置自动回复。</p><small>仅限本人或获授权的 WhatsApp 账号</small></div>';
+    if (me?.role !== 'admin') area.querySelector('p').innerHTML = selectedAccount ? '选择左侧会话开始聊天，或点击 ＋ 新建聊天。<br>号码连接及管理请联系管理员。' : '请联系管理员分配并连接 WhatsApp 号码。<br>开通后可在这里聊天、配置自动回复。';
+    return;
   }
   const previousScroll = area.scrollTop;
   const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 90;
@@ -596,24 +599,24 @@ async function loadNumberPool(users = poolUsers) {
     $('admin-numbers').replaceChildren();
     if (!result.accounts.length) $('admin-numbers').textContent = '暂无托管号码。已有用户自有号码保持原样，不进入此列表。';
     for (const item of result.accounts) {
-      const row = document.createElement('div'); row.className = 'admin-user';
+      const row = document.createElement('div'); row.className = 'admin-user'; row.dataset.numberId = item.id;
       const info = document.createElement('div'); info.className = 'user-name';
       const label = document.createElement('strong'); label.textContent = `${item.label}${item.number ? ` · +${item.number}` : ''}`;
-      const detail = document.createElement('small'); detail.textContent = `${statusNames[item.status] || item.status} · ${item.username || '待分配'}${!item.allowed ? ' · 订阅或配额受限' : ''}`; info.append(label, detail); row.append(info);
+      const detail = document.createElement('small'); detail.textContent = `${statusNames[item.status] || item.status} · ${item.username || '待分配'}${item.managed === 0 ? ' · 原有自有号码' : ''}${!item.allowed ? ' · 订阅或配额受限' : ''}`; info.append(label, detail); row.append(info);
       const select = document.createElement('select'); select.add(new Option('待分配 / 收回', ''));
       for (const user of poolUsers.filter(u => u.role !== 'admin')) { const option = new Option(`${user.username} · ${user.accountCount}/${user.limit}${user.active ? '' : ' · 订阅无效'}`, user.id); option.disabled = !user.active && user.id !== item.userId; select.add(option); }
-      select.value = item.userId || ''; row.append(select);
-      const save = document.createElement('button'); save.textContent = '保存分配'; save.type = 'button';
+      select.value = item.userId || ''; select.disabled = item.managed === 0; row.append(select);
+      const save = document.createElement('button'); save.textContent = '保存分配'; save.type = 'button'; save.disabled = item.managed === 0;
       save.onclick = async () => {
         if (item.userId !== (select.value || null) && !confirm('变更号码使用人？原用户立即失去访问权限，新用户可查看该号码已有聊天记录和流程。')) return;
         save.disabled = true;
         try { await api(`/api/admin/numbers/${item.id}/assignment`, { method: 'PATCH', body: JSON.stringify({ userId: select.value || null }) }); await loadAdmin(); await refreshAccounts(); }
         catch (error) { notice(error.message); save.disabled = false; }
       }; row.append(save);
-      if (item.managed === 1) {
+      if (item.managed !== 2) {
         const connect = document.createElement('button'); connect.type = 'button'; connect.className = 'outline'; connect.textContent = '扫码 / 连接状态'; connect.onclick = () => openPoolDevice(item); row.append(connect);
         const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet danger'; remove.textContent = '删除';
-        remove.onclick = async () => { if (!confirm('删除此待分配号码及其本地记录？')) return; try { await api(`/api/admin/numbers/${item.id}`, { method: 'DELETE' }); await loadNumberPool(); } catch (error) { notice(error.message); } }; row.append(remove);
+        remove.onclick = async () => { if (!confirm('删除此号码及其本地记录？')) return; try { await api(`/api/admin/numbers/${item.id}`, { method: 'DELETE' }); await loadNumberPool(); } catch (error) { notice(error.message); } }; row.append(remove);
       }
       $('admin-numbers').append(row);
     }
@@ -632,10 +635,12 @@ async function refreshPoolDevice() {
     const state = await api(`/api/admin/numbers/${id}/state`); if (id !== poolDialogId || epoch !== authEpoch) return;
     $('pool-qr').hidden = !state.qr; if (state.qr) $('pool-qr').src = state.qr;
     $('pool-device-status').textContent = `${statusNames[state.status] || state.status}${state.number ? ` · +${state.number}` : ''}${state.error ? ` · ${state.error}` : ''}`;
-    $('pool-connect').disabled = state.status === 'connected' || state.status === 'connecting' || state.status === 'qr' || state.managed !== 1;
+    $('pool-connect').disabled = state.status === 'connected' || state.status === 'connecting' || state.status === 'qr' || state.managed === 2;
   } catch (error) { if (id === poolDialogId && epoch === authEpoch) $('pool-device-status').textContent = error.message; }
   if (id === poolDialogId && epoch === authEpoch) poolPoll = setTimeout(refreshPoolDevice, 1500);
 }
+$('pool-sync').onclick = async () => { if (!poolDialogId) return; try { await api(`/api/admin/numbers/${poolDialogId}/sync`, { method: 'POST' }); notice('已开始同步'); } catch (error) { notice(error.message); } };
+$('pool-reset').onclick = async () => { if (!poolDialogId || !confirm('重置此号码的登录会话？需要重新扫码。')) return; try { await api(`/api/admin/numbers/${poolDialogId}/logout`, { method: 'POST' }); } catch (error) { notice(error.message); } };
 $('pool-device-close').onclick = closePoolDevice;
 $('pool-device-dialog').addEventListener('cancel', closePoolDevice);
 $('pool-connect').onclick = async () => { const id = poolDialogId; if (!id) return; try { await api(`/api/admin/numbers/${id}/connect`, { method: 'POST' }); } catch (error) { $('pool-device-status').textContent = error.message; } };

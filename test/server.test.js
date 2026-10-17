@@ -66,7 +66,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     const bobAccount = legacyAccount(dataDir, bobUser.id, 'Existing Bob');
     assert.equal((await bob.request(`${base}/state`)).status, 404);
     assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
-    assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
+    assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 403);
     assert.equal((await bob.request(`${base}/connect`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
     assert.equal((await bob.request(`${base}/messages/PRIVATE/media`, { method: 'POST' })).status, 404);
@@ -150,7 +150,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal(downgraded.filter(a => a.allowed).length, 1);
     const blocked = downgraded.find(a => !a.allowed);
     assert.equal((await alice.request(`/api/accounts/${blocked.id}/connect`, { method: 'POST' })).status, 403);
-    assert.equal((await alice.request(`/api/accounts/${blocked.id}`, { method: 'DELETE' })).status, 200);
+    assert.equal((await alice.request(`/api/accounts/${blocked.id}`, { method: 'DELETE' })).status, 403);
     await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: grant('basic', true, new Date(Date.now() + 1000).toISOString()) });
     const expiringController = new AbortController();
     const expiryTimeout = setTimeout(() => expiringController.abort(), 10000); expiryTimeout.unref();
@@ -254,6 +254,10 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     const existing = legacyAccount(dataDir, aliceUser.id, 'Existing self-owned');
     assert.equal((await alice.request('/api/accounts', { method: 'POST', body: { label: 'No new self-owned' } })).status, 403);
     assert.equal((await alice.request(`/api/accounts/${existing.id}/state`)).status, 200);
+    for (const action of ['sync', 'connect', 'logout']) assert.equal((await alice.request(`/api/accounts/${existing.id}/${action}`, { method: 'POST' })).status, 403);
+    assert.equal((await alice.request(`/api/accounts/${existing.id}`, { method: 'DELETE' })).status, 403);
+    const legacyMeta = await (await admin.request(`/api/admin/numbers/${existing.id}/state`)).json();
+    assert.equal(Object.hasOwn(legacyMeta, 'messages'), false); assert.equal(legacyMeta.userId, aliceUser.id);
     assert.equal((await alice.request('/api/admin/numbers')).status, 403);
     const pool = (await (await admin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Provisioned' } })).json()).account;
     assert.equal((await alice.request(`/api/accounts/${pool.id}/state`)).status, 404);
