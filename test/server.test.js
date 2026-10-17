@@ -71,6 +71,8 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await bob.request(`${base}/messages/missing/forward`, { method: 'POST', body: { phone: '123456789' } })).status, 404);
     assert.equal((await bob.request(`${base}/messages/missing/revoke`, { method: 'POST' })).status, 404);
     assert.equal((await alice.request(`${base}/messages`, { method: 'POST', body: { phone: '123456789', text: 'hello', voice: true } })).status, 400);
+    assert.equal((await bob.request(`${base}/contacts`, { method: 'PATCH', body: { jid: '123456789@s.whatsapp.net', remark: 'foreign' } })).status, 404);
+    assert.equal((await alice.request(`${base}/contacts`, { method: 'PATCH', body: { jid: '123456789@s.whatsapp.net', remark: 'missing' } })).status, 404);
     assert.equal((await alice.request(`${base}/messages/missing/media`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(base, { method: 'DELETE' })).status, 404);
     const state = await (await alice.request(`${base}/state`)).json(); assert.equal(state.status, 'idle'); assert.deepEqual(state.messages, []);

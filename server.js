@@ -165,6 +165,13 @@ accountRouter.post('/connect', async (req, res) => {
   res.status(202).json({ ok: true });
 });
 accountRouter.post('/logout', async (req, res) => { await req.runtime.reset(); res.json({ ok: true }); });
+accountRouter.patch('/contacts', (req, res) => {
+  const { jid, remark, readAt } = req.body || {};
+  if (typeof jid !== 'string' || !store.messages(req.account.id).some(m => m.jid === jid)) throw new AppError(404, '会话不存在');
+  if ((remark !== undefined && (typeof remark !== 'string' || remark.length > 100)) || (readAt !== undefined && (!Number.isSafeInteger(readAt) || readAt < 0 || readAt > Date.now() + 5000)) || (remark === undefined && readAt === undefined)) throw new AppError(400, '备注最多100字，已读时间必须有效');
+  const contact = store.updateContact(req.account.id, jid, { ...(remark !== undefined ? { remark: remark.trim() } : {}), ...(readAt !== undefined ? { readAt: Math.min(readAt, Date.now()) } : {}) });
+  req.runtime.broadcast(); res.json({ contact });
+});
 accountRouter.post('/messages', async (req, res) => {
   const { text = '', phone, jid: selectedJid, attachment: attachmentId, voice = false } = req.body || {};
   const attachment = attachmentId ? store.attachment(req.account.id, attachmentId) : null;

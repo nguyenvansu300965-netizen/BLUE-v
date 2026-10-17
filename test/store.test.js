@@ -55,3 +55,20 @@ test('subscription expiry blocks account creation and sends; messages stay isola
     assert.throws(() => store.grant(actor, user.id, { enabled: true, plan: 'vip', expiresAt: new Date(Date.now() - 1).toISOString() }), /未来/);
   } finally { store.close(); await rm(dir, { recursive: true }); }
 });
+
+
+test('contact remarks and monotonic read markers persist per account and cascade on deletion', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-contacts-')); let store = new Store(dir);
+  try {
+    await store.bootstrap('contact-admin', '123456'); const user = store.byName('contact-admin');
+    const a = store.createAccount(user.id, 'One'), b = store.createAccount(user.id, 'Two'), jid = '123456789@s.whatsapp.net';
+    store.updateContact(a.id, jid, { remark: '客户甲', readAt: 1000, name: 'Rose', phone: '123456789' });
+    store.updateContact(a.id, jid, { readAt: 500 });
+    assert.equal(store.contacts(a.id)[0].readAt, 1000);
+    assert.deepEqual(store.contacts(b.id), []);
+    store.close(); store = new Store(dir);
+    assert.equal(store.contacts(a.id)[0].remark, '客户甲');
+    store.updateContact(a.id, jid, { remark: '' }); assert.equal(store.contacts(a.id)[0].name, 'Rose');
+    store.deleteAccount(a.id); assert.deepEqual(store.contacts(a.id), []);
+  } finally { store.close(); await rm(dir, { recursive: true }); }
+});

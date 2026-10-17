@@ -4,12 +4,15 @@ const statusNames = { idle: '未连接', connecting: '连接中', qr: '等待扫
 let me = null, accounts = [], selectedAccount = '', selectedThread = '', draftPhone = '', messages = [], stream = null, registration = false, sending = false, connected = false;
 let attachmentDraft = null, passwordTarget = null, forwardDraft = null;
 let voiceRecorder = null, voiceStream = null, voiceTimer = null, recordingToken = 0;
+let contacts = [], seenSnapshot = false, lastReceiverAt = 0, readMarks = new Map(), contactDraft = null;
+let soundEnabled = false, notificationAudio = null, lastSoundAt = 0;
 let accountsRequest = 0, creatingAccount = false;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { stream?.close(); stream = null; }
 function showAuth() {
   const hadIdentity = Boolean(me);
+  resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
   authEpoch++; clearAttachment(); closePasswordDialog();
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
   $('self-number').hidden = true; $('self-number').textContent = '';
@@ -41,6 +44,7 @@ window.workspaceApi = api;
 function accountPath(suffix = '') { if (!selectedAccount) throw new Error('请先添加或选择号码'); return `/api/accounts/${selectedAccount}${suffix}`; }
 function showPage(name) {
   for (const page of ['chat', 'flows', 'admin']) { $(`page-${page}`).hidden = page !== name; $(`nav-${page}`).classList.toggle('active', page === name); }
+  if (name === 'chat') { markCurrentRead(); renderChats(); }
   if (name === 'admin') void loadAdmin();
 }
 function updateMembership(user) {
@@ -82,6 +86,7 @@ async function enter(user) {
   await refreshAccounts();
 }
 function switchAccount() {
+  resetChatExtras();
   $('self-number').hidden = true; $('self-number').textContent = '';
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
@@ -100,7 +105,14 @@ function renderState(state) {
   if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;
   if (state.status === 'connected' && !/^[0-9]+@(s\.whatsapp\.net|c\.us|lid)$/.test(state.user?.id || '')) state = { ...state, status: 'connecting', user: null, progress: '正在核实 WhatsApp 登录身份，尚未取得当前号码…' };
   connectionStatus = state.status;
+  const oldIds = new Set(messages.map(m => m.id));
+  const newMessages = (state.messages || []).filter(m => !oldIds.has(m.id) && !m.outgoing && !m.revoked && m.time > Date.now() - 120000);
+  const liveArrival = seenSnapshot && (state.receiver?.lastMessageAt || 0) > lastReceiverAt && state.sync?.status !== 'syncing';
+  lastReceiverAt = state.receiver?.lastMessageAt || 0; seenSnapshot = true;
+  contacts = (state.contacts || []).map(c => ({ ...c, readAt: Math.max(c.readAt || 0, readMarks.get(c.jid) || 0) }));
   connected = state.status === 'connected'; messages = state.messages;
+  if (liveArrival && newMessages.some(m => !(m.jid === selectedThread && viewingChat()))) playNotification();
+  markCurrentRead();
   $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '实时接收已就绪') : '消息接收初始化中…');
   $('receiver-status').title = state.receiver ? `收到事件 ${state.receiver.received}，未解析 ${state.receiver.rejected}` : '';
   $('sync-status').textContent = state.sync?.status === 'syncing' ? '正在导入最近会话…' : state.sync?.error || (state.sync?.updatedAt ? `最近同步新增 ${state.sync.imported} 条` : '');
@@ -137,38 +149,51 @@ function threads() {
     map.set(message.jid, { jid: message.jid, name: displayName, last: message });
   }
   if (draftPhone && selectedThread) map.set(selectedThread, map.get(selectedThread) || { jid: selectedThread, name: draftPhone, last: { text: '新会话', time: Date.now() } });
-  return [...map.values()].sort((a, b) => b.last.time - a.last.time);
+  return [...map.values()].map(thread => {
+    const contact = contacts.find(c => c.jid === thread.jid);
+    const wsName = contact?.name || thread.name;
+    const phone = contact?.phone || /^([1-9]\d{6,14})@s\.whatsapp\.net$/.exec(thread.jid)?.[1] || '';
+    const readAt = Math.max(contact?.readAt || 0, readMarks.get(thread.jid) || 0);
+    return { ...thread, wsName, name: contact?.remark || wsName, phone, remark: contact?.remark || '', unread: messages.filter(m => m.jid === thread.jid && !m.outgoing && !m.revoked && m.time > readAt).length };
+  }).sort((a, b) => b.last.time - a.last.time);
 }
 function renderChats() {
+  const previousScroll = $('chat-list').scrollTop;
   const filter = $('chat-search').value.toLowerCase();
-  const list = threads().filter(t => `${t.name} ${t.jid} ${t.last.text}`.toLowerCase().includes(filter));
+  const list = threads().filter(t => `${t.name} ${t.wsName} ${t.phone} ${t.jid} ${t.last.text}`.toLowerCase().includes(filter));
   $('chat-list').replaceChildren();
   if (!list.length) {
     const empty = document.createElement('div'); empty.className = 'empty-list'; empty.textContent = !selectedAccount ? '选择或添加 WhatsApp 号码，开启你的第一段对话。' : '还没有会话。连接号码后接收消息，或点击 ＋ 开始新会话。'; $('chat-list').append(empty);
   }
   for (const thread of list) {
-    const button = document.createElement('button'); button.className = `chat-item${thread.jid === selectedThread ? ' active' : ''}`;
+    const button = document.createElement('button'); button.className = `chat-item${thread.jid === selectedThread ? ' active' : ''}${thread.unread ? ' has-unread' : ''}`;
     const avatar = document.createElement('span'); avatar.className = 'avatar'; avatar.textContent = thread.name[0];
     const copy = document.createElement('span'); copy.className = 'chat-copy';
     const top = document.createElement('span'); top.className = 'chat-top';
     const name = document.createElement('strong'); name.textContent = thread.name;
     const time = document.createElement('time'); time.textContent = new Date(thread.last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const preview = document.createElement('span'); preview.className = 'chat-preview'; preview.textContent = `${thread.last.outgoing ? '你：' : ''}${thread.last.text}`;
-    top.append(name, time); copy.append(top, preview); button.append(avatar, copy);
-    button.onclick = () => { if (selectedThread !== thread.jid) clearAttachment(); selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); renderChats(); renderMessages(); };
+    const details = document.createElement('span'); details.className = 'chat-contact-details';
+    details.textContent = `${thread.remark ? `${thread.wsName} · ` : ''}${thread.phone ? `+${thread.phone}` : thread.jid.endsWith('@g.us') ? '群聊' : '手机号待解析'}`;
+    if (thread.unread) { const badge = document.createElement('span'); badge.className = 'unread-badge'; badge.textContent = thread.unread > 99 ? '99+' : String(thread.unread); badge.setAttribute('aria-label', `${thread.unread} 条未读消息`); top.append(badge); }
+    top.prepend(name, time); copy.append(top, details, preview); button.append(avatar, copy);
+    button.onclick = () => { if (selectedThread !== thread.jid) clearAttachment(); selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); markCurrentRead(); renderChats(); renderMessages(); };
     $('chat-list').append(button);
   }
+  $('chat-list').scrollTop = previousScroll;
 }
 function renderMessages() {
   const thread = threads().find(t => t.jid === selectedThread);
+  $('edit-contact').disabled = !thread; $('close-chat').disabled = !selectedThread;
   $('chat-name').textContent = thread?.name || 'BLUE-v 网页工作台';
-  $('chat-subtitle').textContent = thread ? `${thread.jid.split('@')[0]} · ${connected ? '当前号码已连接' : '当前号码未连接'} · 手机上点此返回会话列表` : '选择一个号码和会话，开始聊天';
+  $('chat-subtitle').textContent = thread ? `${thread.phone ? `+${thread.phone}` : thread.jid.endsWith('@g.us') ? '群聊' : '手机号待解析'}${thread.remark ? ` · ${thread.wsName}` : ''} · ${connected ? '当前号码已连接' : '当前号码未连接'} · 手机上点此返回会话列表` : '选择一个号码和会话，开始聊天';
   $('chat-avatar').textContent = thread?.name[0] || 'B';
   $('send').disabled = !connected || !selectedThread || sending;
   const area = $('messages');
   if (!selectedThread) {
     area.innerHTML = '<div class="chat-welcome"><div class="welcome-icon">☏</div><h2>让沟通更进一步</h2><p>添加 WhatsApp 号码，扫码关联设备<br>在这里接收客户消息、配置自动回复。</p><small>仅限本人或获授权的 WhatsApp 账号</small></div>'; return;
   }
+  const previousScroll = area.scrollTop;
   const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 90;
   area.replaceChildren();
   let day = '';
@@ -235,7 +260,7 @@ function renderMessages() {
     }
     bubble.append(time); area.append(bubble);
   }
-  if (nearBottom) area.scrollTop = area.scrollHeight;
+  area.scrollTop = nearBottom ? area.scrollHeight : previousScroll;
 }
 $('auth-toggle').onclick = () => {
   registration = !registration;
@@ -496,3 +521,58 @@ $('voice-file').onchange = () => {
   clearAttachment(); attachmentDraft = { file: new File([file], file.name, { type }), voice: true, uploaded: null };
   $('attachment-draft').textContent = `语音：${file.name}，点击发送`; $('attachment-draft').hidden = false; $('clear-attachment').hidden = false; $('microphone-dialog').close();
 };
+
+function resetChatExtras() {
+  contacts = []; seenSnapshot = false; lastReceiverAt = 0; readMarks = new Map(); contactDraft = null;
+  $('contact-dialog').close(); $('contact-remark').value = ''; $('contact-error').textContent = '';
+}
+function viewingChat() { return !document.hidden && document.hasFocus() && !$('page-chat').hidden && (innerWidth > 650 || $('page-chat').classList.contains('chat-open')); }
+function markCurrentRead() {
+  if (!me || !selectedAccount || !selectedThread || !viewingChat()) return;
+  const unread = messages.filter(m => m.jid === selectedThread && !m.outgoing && !m.revoked);
+  if (!unread.length) return;
+  const latest = Math.min(Date.now(), Math.ceil(Math.max(...unread.map(m => m.time))));
+  const previous = Math.max(readMarks.get(selectedThread) || 0, contacts.find(c => c.jid === selectedThread)?.readAt || 0);
+  if (latest <= previous) return;
+  const jid = selectedThread, id = selectedAccount, epoch = authEpoch; readMarks.set(jid, latest);
+  void api(`/api/accounts/${id}/contacts`, { method: 'PATCH', body: JSON.stringify({ jid, readAt: latest }) }).catch(() => { if (epoch === authEpoch && id === selectedAccount && readMarks.get(jid) === latest) readMarks.delete(jid); });
+}
+$('close-chat').onclick = event => {
+  event.stopPropagation(); clearAttachment(); selectedThread = ''; draftPhone = ''; $('text').value = '';
+  $('page-chat').classList.remove('chat-open'); renderChats(); renderMessages();
+};
+$('edit-contact').onclick = event => {
+  event.stopPropagation(); if (!selectedThread) return;
+  contactDraft = { jid: selectedThread, account: selectedAccount, epoch: authEpoch };
+  $('contact-remark').value = contacts.find(c => c.jid === selectedThread)?.remark || ''; $('contact-error').textContent = ''; $('contact-save').disabled = false; $('contact-dialog').showModal();
+};
+$('contact-cancel').onclick = () => { contactDraft = null; $('contact-dialog').close(); };
+$('contact-dialog').addEventListener('cancel', () => { contactDraft = null; });
+$('contact-save').onclick = async () => {
+  const draft = contactDraft; if (!draft) return; $('contact-save').disabled = true;
+  try {
+    const { contact } = await api(`/api/accounts/${draft.account}/contacts`, { method: 'PATCH', body: JSON.stringify({ jid: draft.jid, remark: $('contact-remark').value }) });
+    if (draft !== contactDraft || draft.epoch !== authEpoch || draft.account !== selectedAccount) return;
+    contacts = contacts.filter(c => c.jid !== contact.jid).concat(contact); $('contact-dialog').close(); contactDraft = null; renderChats(); renderMessages();
+  } catch (error) { if (draft === contactDraft) { $('contact-error').textContent = error.message; $('contact-save').disabled = false; } }
+};
+async function playNotification() {
+  if (!soundEnabled || !notificationAudio || Date.now() - lastSoundAt < 1500) return;
+  try {
+    await notificationAudio.resume(); const oscillator = notificationAudio.createOscillator(), gain = notificationAudio.createGain();
+    oscillator.connect(gain); gain.connect(notificationAudio.destination); oscillator.frequency.value = 660;
+    gain.gain.setValueAtTime(0.08, notificationAudio.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, notificationAudio.currentTime + 0.2);
+    oscillator.start(); oscillator.stop(notificationAudio.currentTime + 0.2); lastSoundAt = Date.now();
+  } catch { /* Browsers may suspend audio while in the background; unread markers remain visible. */ }
+}
+$('notification-sound').onclick = async () => {
+  try {
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return notice('此浏览器不支持声音提醒，仍会显示未读提示');
+    notificationAudio ||= new Audio(); await notificationAudio.resume(); soundEnabled = !soundEnabled;
+    $('notification-sound').textContent = soundEnabled ? '关闭声音' : '开启声音'; $('notification-sound').setAttribute('aria-pressed', String(soundEnabled));
+    if (soundEnabled) { lastSoundAt = 0; void playNotification(); }
+  } catch { notice('浏览器阻止了声音，请检查网站声音权限'); }
+};
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { markCurrentRead(); renderChats(); } });
+window.addEventListener('focus', () => { markCurrentRead(); renderChats(); });

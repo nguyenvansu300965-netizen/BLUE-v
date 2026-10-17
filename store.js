@@ -40,6 +40,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS messages (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(account_id,id));
       CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS flow_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS contacts (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, jid TEXT NOT NULL, remark TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', read_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,jid));
       CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
     `);
   }
@@ -134,6 +135,15 @@ export class Store {
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
   messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  contacts(account) { return this.db.prepare('SELECT jid,remark,name,phone,read_at AS readAt FROM contacts WHERE account_id=?').all(account); }
+  updateContact(account, jid, fields) {
+    this.db.prepare('INSERT OR IGNORE INTO contacts(account_id,jid) VALUES(?,?)').run(account, jid);
+    if (fields.remark !== undefined) this.db.prepare('UPDATE contacts SET remark=? WHERE account_id=? AND jid=?').run(fields.remark, account, jid);
+    if (fields.readAt !== undefined) this.db.prepare('UPDATE contacts SET read_at=MAX(read_at,?) WHERE account_id=? AND jid=?').run(fields.readAt, account, jid);
+    if (fields.name) this.db.prepare('UPDATE contacts SET name=? WHERE account_id=? AND jid=?').run(fields.name, account, jid);
+    if (fields.phone) this.db.prepare('UPDATE contacts SET phone=? WHERE account_id=? AND jid=?').run(fields.phone, account, jid);
+    return this.contacts(account).find(contact => contact.jid === jid);
+  }
   revokeMessage(account, id) {
     const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
     if (!row) return false;
