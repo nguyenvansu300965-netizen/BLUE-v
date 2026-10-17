@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeWaMessage, toStoredJid, toWaJid } from './messages.js';
+import { normalizeWaMessage, toStoredJid, toWaJid, stanzaId, receiptAck, mergeReceipt } from './messages.js';
 import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
@@ -16,6 +16,7 @@ export class WhatsAppAccount {
     this.account = account; this.store = store;
     this.dir = path.join(dataDir, 'tenants', account.user_id, account.id);
     this.profileDir = path.join(this.dir, 'browser-profile'); this.sessionMarker = path.join(this.dir, 'wajs-session.json'); this.mediaDir = path.join(this.dir, 'media'); this.flowFile = path.join(this.dir, 'flows.json');
+    this.pendingReceipts = new Map();
     this.contactLookups = new Map(); this.contactQueue = Promise.resolve();
     this.mediaDownloads = new Map(); this.mediaQueue = Promise.resolve();
     this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
@@ -53,11 +54,22 @@ export class WhatsAppAccount {
     }
   }
   update(patch) { this.state = { ...this.state, ...patch }; this.broadcast(); }
-  remember(item) { const added = this.store.remember(this.account.id, item); if (added) this.broadcast(); return added; }
+  remember(item) {
+    const key = `${item.jid}:${item.id}`, pending = this.pendingReceipts.get(key);
+    if (item.outgoing && pending !== undefined) { item = { ...item, ack: mergeReceipt(item.ack, pending) }; this.pendingReceipts.delete(key); }
+    const added = this.store.remember(this.account.id, item); if (added) this.broadcast(); return added; }
   async onClientEvent(event, current) {
     if (current !== this.generation) return;
     if (!this.store.allowed(this.account)) { await this.stop('blocked'); return; }
-    if (event.type === 'receiver_ready') {
+    if (event.type === 'receipt') {
+      const id = stanzaId(event.id), jid = typeof event.jid === 'string' ? toStoredJid(event.jid) : '';
+      if (!id || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid) || receiptAck(event.ack) === undefined) return;
+      if (this.store.updateReceipt(this.account.id, id, jid, event.ack)) this.broadcast();
+      else if (!this.store.messages(this.account.id).some(m => m.id === id)) {
+        const key = `${jid}:${id}`; this.pendingReceipts.set(key, mergeReceipt(this.pendingReceipts.get(key), event.ack));
+        if (this.pendingReceipts.size > 500) this.pendingReceipts.delete(this.pendingReceipts.keys().next().value);
+      }
+    } else if (event.type === 'receiver_ready') {
       this.receiver.ready = true; this.receiver.error = null; this.broadcast();
     } else if (event.type === 'receiver_error') {
       this.receiver.error = event.code === 'MESSAGE_SERIALIZATION' ? '新消息解析异常' : '备用接收通道暂不可用'; this.broadcast();
@@ -156,7 +168,7 @@ export class WhatsAppAccount {
     } finally { if (current === this.generation) this.connecting = false; }
   }
   stop(status = 'idle') {
-    this.generation++; clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
+    this.generation++; this.pendingReceipts.clear(); clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
     this.receiver.ready = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});

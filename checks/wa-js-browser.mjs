@@ -91,7 +91,16 @@ try {
   assert.equal(live.filter(e => e.message.id === 'DECRYPTED').length, 1, 'ciphertext must not mask plaintext and dual events must deduplicate');
   assert.ok(live.some(e => e.message.id === 'MISSED_EVENT'), 'store sweep must recover a missed event in a new conversation');
   assert.ok(!live.some(e => e.message.id === 'OLD_HISTORY'), 'old history must not trigger live reception');
-  const client = new WaJsClient({ profileDir: '/unused', onEvent() {} }); client.page = page;
+  await page.evaluate(() => {
+    const id = { id: 'RECEIPT', remote: { _serialized: '123456789@c.us' }, fromMe: true };
+    window.fixtureHandlers['chat.msg_ack_change']({ ack: 2, ids: [id], chat: id.remote });
+    window.fixtureHandlers['chat.msg_ack_change']({ ack: 2, ids: [id], chat: id.remote });
+    window.rawHandlers['change:ack']({ id, ack: 3 });
+    window.rawHandlers['change:ack']({ id: { ...id, id: 'INCOMING', fromMe: false }, ack: 3 });
+  });
+  for (let i = 0; i < 20 && received.filter(e => e.type === 'receipt').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.deepEqual(received.filter(e => e.type === 'receipt').map(e => [e.id, e.jid, e.ack]), [['RECEIPT', '123456789@c.us', 2], ['RECEIPT', '123456789@c.us', 3]]);
+  const client = new WaJsClient({ profileDir: '/unused', onEvent(event) { received.push(event); } }); client.page = page;
   await page.evaluate(() => { window.WPP.contact = { getPnLidEntry: async to => ({ phoneNumber: { _serialized: '447700900123@c.us' }, contact: { pushname: 'Rose', name: 'Saved name' } }) }; });
   assert.deepEqual(await client.contactInfo('999999999999999@lid'), { name: 'Rose', phoneNumber: '447700900123' });
   await page.evaluate(() => { window.WPP.contact.getPnLidEntry = async () => { throw new Error('Unavailable'); }; });
@@ -103,6 +112,7 @@ try {
     window.WPP.chat.list = async () => [{ id: '123456789@c.us', name: 'Customer' }];
     window.WPP.chat.getMessages = async () => [{ id: 'false_123456789@c.us_HISTORY', body: 'Existing conversation', type: 'chat', t: 123 }];
   });
+  assert.ok(received.some(e => e.type === 'receipt' && e.id === 'TEXT' && e.ack === 1), 'send return value supplies an initial explicit receipt');
   const history = await client.fetchMessages();
   assert.equal(history.chatCount, 1); assert.equal(history.messages[0].history, true); assert.equal(history.messages[0].chatId, '123456789@c.us');
   assert.equal(normalizeWaMessage(history.messages[0]).text, 'Existing conversation');

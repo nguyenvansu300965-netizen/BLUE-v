@@ -56,6 +56,17 @@ try {
     const state = await (await fetch(`/api/accounts/${id}/state`)).json();
     renderState({ ...state, messages: Array.from({ length: 100 }, (_, n) => ({ id: `long-${n}`, jid: '447700900123@s.whatsapp.net', name: 'Rose', outgoing: true, text: 'Long chat content '.repeat(20), time: Date.now() + n })) });
   }, account.id);
+  await page.evaluate(() => {
+    const states = [undefined, 0, 1, 2, 3, 4, -5];
+    messages = states.map((ack, n) => ({ id: `receipt-${n}`, jid: selectedThread, name: 'Rose', text: 'Receipt test', time: Date.now(), outgoing: true, ...(ack === undefined ? {} : { ack }) })); renderMessages();
+  });
+  const receipts = await page.$$eval('.message-receipt', els => els.map(el => ({ text: el.textContent, label: el.getAttribute('aria-label'), blue: el.classList.contains('read') })));
+  assert.deepEqual(receipts.map(r => r.text), ['◷', '◷', '✓', '✓✓', '✓✓', '✓✓', '! 发送失败']);
+  assert.deepEqual(receipts.map(r => r.blue), [false, false, false, false, true, true, false]);
+  assert.equal(receipts.at(-1).label, '媒体无法上传');
+  await page.click('#receipt-help'); assert.match(await page.$eval('#receipt-dialog', el => el.textContent), /单勾不代表被拉黑/); await page.click('#receipt-close');
+  // Restore enough content to verify independent scrolling below.
+  await page.evaluate(() => { messages = Array.from({ length: 100 }, (_, n) => ({ id: `overflow-${n}`, jid: selectedThread, name: 'Rose', text: 'Long text '.repeat(40), time: Date.now(), outgoing: true })); renderMessages(); });
   const before = await page.$eval('.rail', el => el.getBoundingClientRect().top);
   await page.$eval('#messages', el => { el.scrollTop = el.scrollHeight; });
   const geometry = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, view: innerHeight, content: document.getElementById('messages').scrollHeight, height: document.getElementById('messages').clientHeight }));

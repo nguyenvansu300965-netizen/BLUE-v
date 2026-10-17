@@ -1,4 +1,4 @@
-import { displayMessage, isImageEncoding } from './messages.js';
+import { displayMessage, isImageEncoding, receiptAck, mergeReceipt } from './messages.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -144,6 +144,18 @@ export class Store {
     if (fields.phone) this.db.prepare('UPDATE contacts SET phone=? WHERE account_id=? AND jid=?').run(fields.phone, account, jid);
     return this.contacts(account).find(contact => contact.jid === jid);
   }
+  updateReceipt(account, id, jid, ack) {
+    if (receiptAck(ack) === undefined) return false;
+    const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
+    if (!row) return false;
+    const message = JSON.parse(row.payload);
+    if (!message.outgoing || message.revoked || message.jid !== jid) return false;
+    const merged = mergeReceipt(message.ack, ack);
+    if (merged === message.ack) return false;
+    message.ack = merged;
+    this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(JSON.stringify(message), account, id);
+    return true;
+  }
   revokeMessage(account, id) {
     const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
     if (!row) return false;
@@ -172,10 +184,12 @@ export class Store {
     return null;
   }
   remember(account, item) {
+    const ackChanged = item.outgoing && this.updateReceipt(account, item.id, item.jid, item.ack);
     const result = this.db.prepare('INSERT OR IGNORE INTO messages VALUES(?,?,?,?)').run(account, item.id, JSON.stringify(item), item.time);
     if (!result.changes) {
       const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
       if (previous.revoked) return false;
+      if (item.outgoing && previous.ack !== undefined) item = { ...item, ack: mergeReceipt(previous.ack, item.ack) };
       const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
       const mediaRepair = item.media && !previous.media && !previous.image && !previous.attachment;
       if (((item.automatic || item.manual) && item.outgoing) || repair || mediaRepair) {
@@ -187,7 +201,7 @@ export class Store {
       }
     }
     this.db.prepare('DELETE FROM messages WHERE account_id=? AND rowid NOT IN (SELECT rowid FROM messages WHERE account_id=? ORDER BY created_at DESC,rowid DESC LIMIT 500)').run(account, account);
-    return result.changes > 0;
+    return result.changes > 0 || Boolean(ackChanged);
   }
   audit() { return this.db.prepare('SELECT audit.*, users.username AS target_name FROM audit LEFT JOIN users ON users.id=audit.target ORDER BY audit.id DESC LIMIT 100').all(); }
   close() { this.db.close(); }

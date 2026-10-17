@@ -202,7 +202,8 @@ function renderMessages() {
     if (date !== day) { const label = document.createElement('div'); label.className = 'day-label'; label.textContent = date; area.append(label); day = date; }
     const bubble = document.createElement('div'); bubble.className = `bubble${message.outgoing ? ' outgoing' : ''}`;
     const text = document.createElement('div'); text.className = 'bubble-text'; text.textContent = message.text;
-    const time = document.createElement('span'); time.className = 'bubble-time'; time.textContent = `${message.automatic ? '自动回复 · ' : ''}${new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${message.outgoing ? ' ✓' : ''}`;
+    const time = document.createElement('span'); time.className = 'bubble-time'; time.textContent = `${message.automatic ? '自动回复 · ' : ''}${new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    if (message.outgoing && !message.revoked) time.append(receiptIndicator(message));
     const imageUrl = /^[a-f0-9]{32}\.(png|jpg|webp)$/.test(message.image || '') ? `/api/accounts/${selectedAccount}/media/${message.image}` : /^data:image\/(jpeg|png|webp);base64,/.test(message.thumbnail || '') ? message.thumbnail : null;
     if (imageUrl && !message.attachment) {
       const image = document.createElement('img'); image.className = 'message-image'; image.src = imageUrl; image.alt = '消息缩略图'; image.loading = 'lazy';
@@ -576,3 +577,17 @@ $('notification-sound').onclick = async () => {
 };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { markCurrentRead(); renderChats(); } });
 window.addEventListener('focus', () => { markCurrentRead(); renderChats(); });
+
+function receiptIndicator(message) {
+  const ack = message.ack;
+  const failures = { '-7': '设备版本不兼容', '-6': '消息未激活', '-5': '媒体无法上传', '-4': '媒体过大', '-3': '媒体已不可用', '-2': '消息已过期', '-1': '发送失败' };
+  const error = Number.isInteger(ack) && ack < 0 && ack >= -7;
+  const label = error ? failures[ack] : ack === 0 ? '等待发送' : ack === 1 ? '已发送，尚未确认送达' : ack === 2 ? '已送达' : ack === 3 ? '已读' : ack === 4 ? '语音已播放' : '回执待同步，可点击同步消息更新';
+  const icon = document.createElement('span'); icon.className = `message-receipt${ack === 3 || ack === 4 ? ' read' : ''}${error ? ' failed' : ''}`;
+  icon.textContent = error ? '! 发送失败' : ack >= 2 && ack <= 4 ? '✓✓' : ack === 1 ? '✓' : '◷';
+  icon.title = `${label}。未送达无法判断是否被拉黑；对方关闭已读回执时可能不显示已读。`;
+  icon.setAttribute('role', 'img'); icon.setAttribute('aria-label', label);
+  return icon;
+}
+$('receipt-help').onclick = event => { event.stopPropagation(); $('receipt-dialog').showModal(); };
+$('receipt-close').onclick = () => $('receipt-dialog').close();

@@ -213,3 +213,31 @@ test('forward/revoke use only account-owned messages and persist revocation only
     assert.equal(calls.at(-1).at(-1), true, 'recorded audio sends as PTT');
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+
+test('message receipts survive early send races, history refresh and account isolation without regressing read state', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-receipts-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('receipt-admin', '123456'); const user = store.byName('receipt-admin');
+    const a = store.createAccount(user.id, 'One'), b = store.createAccount(user.id, 'Two');
+    rt = await new WhatsAppAccount(a, store, dir).init();
+    const jid = '123456789@s.whatsapp.net', message = { id: 'OUT', jid, name: 'Test', outgoing: true, text: 'hello', time: Date.now(), manual: true };
+    store.remember(b.id, message);
+    await rt.onClientEvent({ type: 'receipt', id: 'true_123456789@c.us_OUT', jid: '123456789@c.us', ack: 2 }, rt.generation);
+    rt.remember(message); assert.equal(store.messages(a.id)[0].ack, 2, 'receipt may arrive before send API stores the message');
+    assert.equal(store.messages(b.id)[0].ack, undefined);
+    await rt.onClientEvent({ type: 'receipt', id: 'OUT', jid: '123456789@c.us', ack: 3 }, rt.generation);
+    store.remember(a.id, { ...message, ack: 1 });
+    store.remember(a.id, { ...message, manual: false, history: true, ack: 0 });
+    assert.equal(store.messages(a.id)[0].ack, 3, 'manual echoes and stale history cannot downgrade read state');
+    await rt.onClientEvent({ type: 'receipt', id: 'OUT', jid: '999999999@c.us', ack: 4 }, rt.generation);
+    assert.equal(store.messages(a.id)[0].ack, 3, 'wrong conversation cannot update the same stanza ID');
+    await rt.onClientEvent({ type: 'receipt', id: 'OUT', jid: '123456789@c.us', ack: 5 }, rt.generation);
+    assert.equal(store.messages(a.id)[0].ack, 3, 'peer acknowledgement is not a read receipt');
+    rt.remember({ ...message, id: 'FAIL' });
+    await rt.onClientEvent({ type: 'receipt', id: 'FAIL', jid, ack: -5 }, rt.generation);
+    assert.equal(store.messages(a.id).find(m => m.id === 'FAIL').ack, -5);
+    const reopen = new Store(dir); assert.equal(reopen.messages(a.id)[0].ack, 3); reopen.close();
+    store.revokeMessage(a.id, 'OUT'); assert.equal(store.updateReceipt(a.id, 'OUT', jid, 4), false);
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
+});

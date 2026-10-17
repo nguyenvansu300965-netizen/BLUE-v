@@ -35,7 +35,7 @@ export function installWaBridge() {
 
     return {
       id: typeof key === 'string' ? key : key?.id || key?._serialized,
-      chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe, sourceId: serialized,
+      chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe, sourceId: serialized, ack: Number.isInteger(msg.ack) ? msg.ack : undefined,
       mime: typeof msg.mimetype === 'string' ? msg.mimetype : '', filename: typeof msg.filename === 'string' ? msg.filename : '', size: Number(msg.size || 0),
       body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
       buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.thumbnail === 'string' ? msg.thumbnail : typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
@@ -52,6 +52,21 @@ export function installWaBridge() {
   const liveSince = Math.floor(Date.now() / 1000);
   const delivered = new Map();
   let rawStore = null, lastSweep = 0;
+  const receiptStates = new Map();
+  function publishReceipt(key, ack, fallbackChat = '') {
+    const serialized = typeof key === 'string' ? key : key?._serialized || '';
+    if (key?.fromMe !== true && !serialized.startsWith('true_')) return;
+    if (!Number.isInteger(ack) || ack < -7 || ack > 4) return;
+    const id = typeof key === 'string' ? key : key?.id || serialized;
+    const jid = wid(key?.remote) || fallbackChat || serialized.split('_')[1];
+    if (!id || !jid) return;
+    const identity = `${jid}:${id}`;
+    if (receiptStates.get(identity) === ack) return;
+    receiptStates.set(identity, ack);
+    if (receiptStates.size > 2000) receiptStates.delete(receiptStates.keys().next().value);
+    emit({ type: 'receipt', id, jid, ack });
+  }
+  function receiptHandler(msg) { try { publishReceipt(msg.id, msg.ack); } catch {} }
   function receiveMessage(msg, source = 'event') {
     try {
       if (!window.WPP?.conn.isMainReady()) return;
@@ -72,15 +87,16 @@ export function installWaBridge() {
       const store = wpp.whatsapp?.MsgStore;
       if (!store) return;
       if (store !== rawStore) {
+        if (rawStore) rawStore.off?.('change:ack', receiptHandler);
         if (rawStore) for (const event of ['add', 'change:type', 'change:body', 'change:caption']) rawStore.off?.(event, rawHandler);
-        rawStore = store;
+        rawStore = store; store.on('change:ack', receiptHandler);
         for (const event of ['add', 'change:type', 'change:body', 'change:caption']) store.on(event, rawHandler);
         emit({ type: 'receiver_ready' });
       }
       if (Date.now() - lastSweep < 3000) return;
       lastSweep = Date.now();
       const models = store.getModelsArray?.() || store.models || store._models || [];
-      for (const msg of Array.isArray(models) ? models.slice(-200) : []) receiveMessage(msg, 'store-sweep');
+      for (const msg of Array.isArray(models) ? models.slice(-200) : []) { receiptHandler(msg); receiveMessage(msg, 'store-sweep'); }
     } catch { emit({ type: 'receiver_error', code: 'MESSAGE_STORE_UNAVAILABLE' }); }
   }
   function rawHandler(msg) { receiveMessage(msg, 'store-event'); }
@@ -122,6 +138,7 @@ export function installWaBridge() {
       wpp.on('conn.logout', () => emit({ type: 'logout' }));
       wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
       wpp.on('chat.new_message', msg => receiveMessage(msg));
+      wpp.on('chat.msg_ack_change', event => { for (const key of event?.ids || []) publishReceipt(key, event.ack, wid(event.chat)); });
       emit({ type: 'receiver_ready' });
     }
     watchMessageStore(wpp);
@@ -278,14 +295,16 @@ export class WaJsClient {
       return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), text, buttons });
     if (!result?.id) throw new Error('WA-JS returned no message ID');
+    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
     return stanzaId(result.id);
   }
   async sendMedia(jid, data, attachment, caption, voice = false) {
     const result = await this.page.evaluate(async ({ to, dataUrl, type, filename, mime, caption, voice }) => {
       const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type, filename, mimetype: mime, caption, ...(voice ? { isPtt: true, waveform: true } : {}), markIsRead: false, waitForAck: true });
-      return { id: result.id };
+      return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), dataUrl: `data:${attachment.mime};base64,${data.toString('base64')}`, type: attachment.type, filename: attachment.name, mime: attachment.mime, caption, voice });
     if (!result?.id) throw new Error('WA-JS returned no message ID');
+    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
     return stanzaId(result.id);
   }
   async sendImage(jid, dataUrl, caption, buttons = []) {
@@ -294,6 +313,7 @@ export class WaJsClient {
       return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), dataUrl, caption, buttons });
     if (!result?.id) throw new Error('WA-JS returned no message ID');
+    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
     return stanzaId(result.id);
   }
   async forwardMessage(sourceId, jid) {
