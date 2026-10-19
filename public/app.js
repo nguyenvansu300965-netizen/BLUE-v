@@ -618,9 +618,14 @@ async function loadNumberPool(users = poolUsers) {
       }; row.append(save);
       if (item.managed !== 2) {
         const connect = document.createElement('button'); connect.type = 'button'; connect.className = 'outline'; connect.textContent = '扫码 / 连接状态'; connect.onclick = () => openPoolDevice(item); row.append(connect);
-        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet danger'; remove.textContent = '删除';
-        remove.onclick = async () => { if (!confirm('删除此号码及其本地记录？')) return; try { await api(`/api/admin/numbers/${item.id}`, { method: 'DELETE' }); await loadNumberPool(); } catch (error) { notice(error.message); } }; row.append(remove);
       }
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet danger'; remove.textContent = '删除号码'; remove.dataset.action = 'delete-number';
+      remove.onclick = async () => {
+        if (!confirm(`确认删除「${item.label}」${item.username ? `（当前用户：${item.username}）` : ''}？该用户将立即失去访问权限，号码的本地聊天、附件、流程及登录档案都会删除。已使用的激活码不返还。`)) return;
+        remove.disabled = true;
+        try { await api(`/api/admin/numbers/${item.id}`, { method: 'DELETE' }); await loadAdmin(); await refreshAccounts(); notice('号码已删除，使用权限已撤销'); }
+        catch (error) { notice(error.message); remove.disabled = false; }
+      }; row.append(remove);
       $('admin-numbers').append(row);
     }
   } catch (error) { if (epoch === authEpoch) $('admin-number-notice').textContent = error.message; }

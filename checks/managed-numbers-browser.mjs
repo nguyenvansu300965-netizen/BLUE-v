@@ -82,6 +82,17 @@ try {
   assert.equal(await customer.$eval('#account-select', el => el.value), legacy.id);
   assert.equal(await customer.$$eval('.chat-item', els => els.length), 0);
   assert.equal(await customer.evaluate(async id => (await fetch(`/api/accounts/${id}/state`)).status, pool.id), 404);
+  // Assigned numbers retain an admin-only delete action; cancelling does not remove them.
+  await page.select(`${poolRow} select`, user.id); page.once('dialog', d => d.accept());
+  const reassigned = page.waitForResponse(r => r.url().endsWith('/assignment') && r.request().method() === 'PATCH'); await page.click(`${poolRow} button`); assert.equal((await reassigned).status(), 200);
+  await customer.evaluate(() => refreshAccounts()); await customer.waitForFunction(id => Array.from(document.getElementById('account-select').options).some(o => o.value === id), {}, pool.id);
+  await customer.select('#account-select', pool.id); await customer.waitForSelector('.chat-item');
+  const removeSelector = `${poolRow} [data-action="delete-number"]`; await page.waitForSelector(removeSelector);
+  page.once('dialog', d => d.dismiss()); await page.click(removeSelector); assert.ok(store.account(pool.id));
+  page.once('dialog', d => { assert.match(d.message(), /激活码不返还/); return d.accept(); });
+  const removed = page.waitForResponse(r => r.url().endsWith(`/api/admin/numbers/${pool.id}`) && r.request().method() === 'DELETE'); await page.click(removeSelector); assert.equal((await removed).status(), 200);
+  await customer.waitForFunction(id => !Array.from(document.getElementById('account-select').options).some(o => o.value === id), {}, pool.id);
+  assert.equal(await customer.$$eval('.chat-item', els => els.length), 0); assert.ok(store.account(legacy.id));
   assert.deepEqual(errors, []);
   console.log('PASS: admin custom quota/provision/assign/reclaim UI loads no message streams; customers keep legacy numbers, cannot add numbers, and lose reclaimed chat access immediately.');
 } finally {

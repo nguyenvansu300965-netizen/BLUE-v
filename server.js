@@ -122,10 +122,20 @@ app.post('/api/admin/numbers/:id/logout', async (req, res) => {
   await rt.reset(); res.json({ ok: true });
 });
 app.delete('/api/admin/numbers/:id', async (req, res) => {
-  const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再删除');
+  const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
   const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
   rt.handover = true;
-  try { await rt.stop(); await rm(rt.dir, { recursive: true, force: true }); store.deleteAccount(account.id); rt.broadcast(); runtimes.delete(account.id); }
+  try {
+    // Keep the stream until ownership checks can report definitive removal.
+    await rt.stop('idle', true);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { rt.drain = null; reject(new AppError(409, '号码操作尚未结束，请稍后删除')); }, 15000);
+      rt.drain = () => { if (!rt.activeRequests) { clearTimeout(timer); rt.drain = null; resolve(); } }; rt.drain();
+    });
+    await Promise.all([rt.mediaQueue, rt.automation.queue, rt.syncing].filter(Boolean));
+    await rm(rt.dir, { recursive: true, force: true }); store.deleteAccount(account.id);
+    rt.broadcast(); runtimes.delete(account.id);
+  }
   finally { rt.handover = false; }
   res.json({ ok: true });
 });

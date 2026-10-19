@@ -303,6 +303,15 @@ test('admin-managed numbers transfer without exposing messages to admin; custom 
     await restoredBob.request('/api/auth/login', { method: 'POST', body: credentials('assigned-bob') });
     const restored = await (await restoredBob.request(`/api/accounts/${pool.id}/state`)).json(); assert.equal(restored.account.storage_owner_id, beforeRestart.storage_owner_id); assert.equal(restored.messages[0].text, 'Number history');
     assert.deepEqual(Buffer.from(await (await restoredBob.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).arrayBuffer()), file);
+    const restoredAdmin = client(service.base); await restoredAdmin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    const deleteController = new AbortController(); const deleteStream = await restoredBob.request(`/api/accounts/${pool.id}/events`, { signal: deleteController.signal }); const deleteReader = deleteStream.body.getReader(); await deleteReader.read();
+    assert.equal((await restoredAdmin.request(`/api/admin/numbers/${pool.id}`, { method: 'DELETE' })).status, 200, 'admin can directly delete a number assigned to another user');
+    let deletedEvent = ''; while (!deletedEvent.includes('event: revoked')) { const part = await deleteReader.read(); if (part.done) break; deletedEvent += new TextDecoder().decode(part.value); } assert.match(deletedEvent, /event: revoked/); deleteController.abort();
+    assert.equal((await restoredBob.request(`/api/accounts/${pool.id}/state`)).status, 404); assert.equal((await restoredBob.request(`/api/accounts/${pool.id}/attachments/${attachment.id}`)).status, 404);
+    const fixtureAfterDelete = new Store(dataDir); assert.equal(fixtureAfterDelete.account(pool.id), undefined); assert.equal(fixtureAfterDelete.messages(pool.id).length, 0); assert.ok(fixtureAfterDelete.account(existing.id)); fixtureAfterDelete.close();
+    const { access } = await import('node:fs/promises'); await assert.rejects(access(path.join(dataDir, 'tenants', original.storage_owner_id, pool.id)));
+    assert.equal((await restoredAdmin.request('/api/admin/numbers', { method: 'POST', body: { label: 'Reuse after deletion', activationCode: codes.codes[0] } })).status, 400);
+
   } finally { await service.stop(); await rm(dataDir, { recursive: true }); }
 });
 

@@ -169,15 +169,14 @@ export class WhatsAppAccount {
       }
     } finally { if (current === this.generation) this.connecting = false; }
   }
-  stop(status = 'idle') {
+  stop(status = 'idle', preserveClients = false) {
     this.generation++; this.pendingReceipts.clear(); clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
     this.receiver.ready = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
     this.update({ status, authenticated: false, qr: null, user: null, progress: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
-    for (const response of this.clients.keys()) response.end();
-    this.clients.clear();
+    if (!preserveClients) { for (const response of this.clients.keys()) response.end(); this.clients.clear(); }
     return this.closing || Promise.resolve();
   }
   async syncMessages() {

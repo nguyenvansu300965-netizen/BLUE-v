@@ -66,7 +66,7 @@ npm start
 - `GET /api/auth/me`、`POST /api/auth/logout`：当前用户与退出。
 - `GET /api/admin/users`、`PATCH /api/admin/users/:id`：超级管理员列表及授权，写入 `{enabled,plan,limit,expiresAt}`，时间为 ISO 字符串。
 - `GET /api/accounts`：自己的自有/获分配号码列表；`POST` 不再开放新增。`DELETE /api/accounts/:id` 仅允许管理员删除自己的原有号码。
-- `GET/POST /api/admin/numbers`：托管号码列表与新增 `{label}`；`GET /api/admin/numbers/:id/state` 只返回连接元数据，`POST .../connect` 扫码连接，`PATCH .../assignment` 使用 `{userId}` 分配或 `{userId:null}` 收回；`DELETE` 仅可删除待分配号码。
+- `GET/POST /api/admin/numbers`：托管号码列表与新增 `{label}`；`GET /api/admin/numbers/:id/state` 只返回连接元数据，`POST .../connect` 扫码连接，`PATCH .../assignment` 使用 `{userId}` 分配或 `{userId:null}` 收回；`DELETE` 允许管理员删除待分配、已分配及原有自有号码。
 - `/api/accounts/:id/state`、`events`、`connect`、`logout`、`messages`、`flows`、`media`：指定号码的状态、实时事件、关联设备、退出 WhatsApp、消息及自动回复资源。旧的全局单账号 API 已移除。
 - `GET /healthz`：公开的进程健康检查，不代表 WhatsApp 已连接。
 
@@ -159,3 +159,5 @@ DATA_DIR=/data node scripts/import-activation-codes.mjs /data/private-activation
 仅管理员可导入导出公共示例。每张图片最大5MB、总图片最大10MB，解压包最大16MB；文件/复制码最大22MB，超过限制需精简图片或拆分示例。损坏的码、无效图片或分支会被拒绝。
 
 管理员在没有任何自有或获分配号码时，也可直接进入「自动回复流程」：系统载入公共示例编辑器，可编辑文案、触发方式、按钮分支，上传图片并保存/另存示例，亦可导入导出复制码。示例及图片通过独立管理员接口保存，不再依赖号码目录。公共示例本身不执行自动回复，因此「启用自动回复」和「载入到当前号码」在没有号码时禁用；用户载入到自己的号码并保存启用后才执行。
+
+管理员可在号码管理列表直接删除已分配号码，无需先收回。确认提示会说明清除本地聊天、附件、流程和登录档案、撤销用户访问权限及激活码不返还。删除前会关闭浏览器并等待已开始的操作结束，删除后立即撤销消息流。普通用户无删除权限。此操作删除平台本地号码资料，不会注销手机上的WhatsApp账号。
