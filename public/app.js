@@ -735,3 +735,89 @@ $('template-transfer-import').onclick = async () => {
   } catch (error) { if (context === templateTransfer) { $('template-transfer-error').textContent = error.message; $('template-transfer-import').disabled = false; } }
 };
 window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') { closeTemplateTransfer(); $('admin-transfer-template').replaceChildren(); } });
+
+let quickContext = null, quickItems = [], quickMedia = null, quickPreviewUrl = null;
+function closeQuickReplies() {
+  quickContext = null; quickItems = []; quickMedia = null;
+  if (quickPreviewUrl) URL.revokeObjectURL(quickPreviewUrl);
+  quickPreviewUrl = null; $('quick-dialog').close(); $('quick-preview').replaceChildren();
+  $('quick-list').replaceChildren(); $('quick-title').value = ''; $('quick-text').value = ''; $('quick-file').value = '';
+}
+function quickCurrent(ctx) { return quickContext === ctx && ctx.epoch === authEpoch && ctx.account === selectedAccount; }
+function previewQuickMedia() {
+  if (quickPreviewUrl) URL.revokeObjectURL(quickPreviewUrl);
+  quickPreviewUrl = null; $('quick-preview').replaceChildren();
+  const file = $('quick-file').files[0], item = file || quickMedia;
+  if (!item) return;
+  const label = document.createElement('p'); label.textContent = `${item.name} · ${(item.size / 1048576).toFixed(1)} MB`; $('quick-preview').append(label);
+  const type = file ? file.type.split('/')[0] : item.type;
+  if (['image', 'audio', 'video'].includes(type)) {
+    const el = document.createElement(type === 'image' ? 'img' : type);
+    el.src = file ? (quickPreviewUrl = URL.createObjectURL(file)) : `/api/accounts/${quickContext.account}/attachments/${item.id}`;
+    if (type !== 'image') el.controls = true;
+    el.style.maxWidth = '100%'; el.style.maxHeight = '220px'; $('quick-preview').append(el);
+  }
+}
+function editQuickReply() {
+  const item = quickItems.find(row => row.id === $('quick-list').value);
+  $('quick-title').value = item?.title || ''; $('quick-text').value = item?.text || '';
+  quickMedia = item?.attachment || null; $('quick-file').value = ''; $('quick-error').textContent = '';
+  $('quick-delete').disabled = !item; previewQuickMedia();
+}
+function renderQuickList(selected = '') {
+  $('quick-list').replaceChildren(new Option('新建快捷回复', ''), ...quickItems.map(item => new Option(item.title, item.id)));
+  $('quick-list').value = selected; editQuickReply();
+}
+$('quick-open').onclick = async () => {
+  if (!selectedAccount) return notice('请先选择号码');
+  closeQuickReplies(); const ctx = quickContext = { account: selectedAccount, epoch: authEpoch, busy: false };
+  $('quick-error').textContent = '正在载入…'; $('quick-save').disabled = true; $('quick-dialog').showModal();
+  try { const result = await api(`/api/accounts/${ctx.account}/quick-replies`); if (!quickCurrent(ctx)) return; quickItems = result.replies; renderQuickList(); }
+  catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
+  finally { if (quickCurrent(ctx)) $('quick-save').disabled = false; }
+};
+$('quick-close').onclick = closeQuickReplies;
+$('quick-dialog').addEventListener('cancel', event => { event.preventDefault(); closeQuickReplies(); });
+window.addEventListener('account-changed', closeQuickReplies);
+$('quick-list').onchange = editQuickReply;
+$('quick-new').onclick = () => { $('quick-list').value = ''; editQuickReply(); };
+$('quick-file').onchange = previewQuickMedia;
+$('quick-remove-media').onclick = () => { quickMedia = null; $('quick-file').value = ''; previewQuickMedia(); };
+$('quick-form').onsubmit = async event => {
+  event.preventDefault(); const ctx = quickContext; if (!ctx || ctx.busy) return;
+  const id = $('quick-list').value, title = $('quick-title').value, text = $('quick-text').value, file = $('quick-file').files[0];
+  let media = quickMedia;
+  ctx.busy = true; $('quick-save').disabled = true; $('quick-error').textContent = '';
+  try {
+    if (file) {
+      if (!file.size || file.size > 20 * 1048576) throw Error('请选择非空媒体文件，最大 20MB');
+      const query = new URLSearchParams({ name: file.name, mime: file.type.split(';')[0] || 'application/octet-stream' });
+      media = (await api(`/api/accounts/${ctx.account}/attachments?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })).attachment;
+    }
+    if (!quickCurrent(ctx)) return;
+    const result = await api(`/api/accounts/${ctx.account}/quick-replies${id ? `/${id}` : ''}`, { method: id ? 'PUT' : 'POST', body: JSON.stringify({ title, text, attachment: media?.id || null }) });
+    if (!quickCurrent(ctx)) return;
+    quickItems = quickItems.filter(item => item.id !== result.reply.id).concat(result.reply); renderQuickList(result.reply.id); $('quick-error').textContent = '已保存';
+  } catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
+  finally { ctx.busy = false; if (quickCurrent(ctx)) $('quick-save').disabled = false; }
+};
+$('quick-delete').onclick = async () => {
+  const ctx = quickContext, id = $('quick-list').value; if (!ctx || ctx.busy || !id) return;
+  ctx.busy = true;
+  try { await api(`/api/accounts/${ctx.account}/quick-replies/${id}`, { method: 'DELETE' }); if (!quickCurrent(ctx)) return; quickItems = quickItems.filter(item => item.id !== id); renderQuickList(); }
+  catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
+  finally { ctx.busy = false; }
+};
+$('quick-load').onclick = () => {
+  if (!quickContext || quickContext.busy || sending) return;
+  if (!selectedThread) { $('quick-error').textContent = '请先选择聊天，再载入快捷回复'; return; }
+  const file = $('quick-file').files[0], text = $('quick-text').value;
+  if (!text.trim() && !file && !quickMedia) { $('quick-error').textContent = '请填写文本或选择媒体'; return; }
+  if (file && (!file.size || file.size > 20 * 1048576)) { $('quick-error').textContent = '请选择非空媒体文件，最大 20MB'; return; }
+  clearAttachment(); $('text').value = text;
+  if (file || quickMedia) {
+    attachmentDraft = file ? { file, uploaded: null } : { uploaded: quickMedia };
+    $('attachment-draft').textContent = (file || quickMedia).name; $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
+  }
+  closeQuickReplies(); $('text').focus(); notice('已载入快捷回复，请确认后点击发送');
+};

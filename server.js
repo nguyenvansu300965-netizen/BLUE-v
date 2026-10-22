@@ -321,6 +321,10 @@ const mediaTypes = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'document'
 };
+accountRouter.get('/quick-replies', (req, res) => res.json({ replies: store.quickReplies(req.account.id) }));
+accountRouter.post('/quick-replies', (req, res) => res.json({ reply: store.saveQuickReply(req.account.id, null, req.body) }));
+accountRouter.put('/quick-replies/:replyId', (req, res) => res.json({ reply: store.saveQuickReply(req.account.id, req.params.replyId, req.body) }));
+accountRouter.delete('/quick-replies/:replyId', (req, res) => { store.deleteQuickReply(req.account.id, req.params.replyId); res.json({ ok: true }); });
 accountRouter.post('/attachments', express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
   const mime = req.query.mime, name = req.query.name;
   if (typeof mime !== 'string' || !Object.hasOwn(mediaTypes, mime) || typeof name !== 'string' || !name.trim() || name.length > 200) throw new AppError(400, '文件类型或名称无效');
