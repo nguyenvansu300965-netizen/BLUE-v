@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Automation, renderReplyText, validateFlows, loadFlows, saveFlows } from '../automation.js';
+import { Automation, automationError, renderReplyText, validateFlows, loadFlows, saveFlows } from '../automation.js';
 import { normalizeWaMessage } from '../messages.js';
 import { sendFlow } from '../flow-sender.js';
 const config = () => ({ enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [
@@ -186,4 +186,12 @@ test('any-content entry with an image and three language buttons sends its text 
   assert.equal(calls[1].buttons.length, 3);
   await engine.handle(event('language-click', '', { selection: 'flow:start:2', quotedId: 'text-2' }));
   assert.equal(calls.at(-1).text, 'Description');
+});
+
+test('automation failures expose actionable safe diagnostics without leaking raw errors', () => {
+  assert.match(automationError({ code: 'ENOENT', message: '/private/data/image' }), /重新上传/);
+  assert.match(automationError(new Error('Protocol timeout')) , /超时/);
+  assert.match(automationError({ status: 403 }), /订阅/);
+  assert.match(automationError({ status: 409 }), /连接/);
+  assert.doesNotMatch(automationError(new Error('secret token')), /secret/);
 });

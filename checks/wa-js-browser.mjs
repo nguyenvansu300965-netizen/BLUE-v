@@ -100,6 +100,32 @@ try {
   });
   for (let i = 0; i < 20 && received.filter(e => e.type === 'receipt').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.deepEqual(received.filter(e => e.type === 'receipt').map(e => [e.id, e.jid, e.ack]), [['RECEIPT', '123456789@c.us', 2], ['RECEIPT', '123456789@c.us', 3]]);
+  await page.evaluate(() => {
+    window.retryStoreHandlers = {}; window.storeAttempts = 0;
+    window.WPP.whatsapp.MsgStore = { models: [], on: (name, handler) => {
+      if (name === 'add' && window.storeAttempts++ === 0) throw Error('store transitioning');
+      window.retryStoreHandlers[name] = handler;
+    }, off: (name, handler) => { if (window.retryStoreHandlers[name] === handler) delete window.retryStoreHandlers[name]; } };
+  });
+  await page.waitForFunction(() => typeof window.retryStoreHandlers.add === 'function');
+  await page.evaluate(() => window.retryStoreHandlers.add({ id: { id: 'STORE_RECOVERED', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', body: 'Store registration retried', t: Math.floor(Date.now() / 1000) }));
+  for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'STORE_RECOVERED'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(received.some(e => e.type === 'message' && e.message.id === 'STORE_RECOVERED'));
+  // A replacement WA-JS runtime must get new listeners. Failed registration
+  // must remain retryable rather than permanently setting the bridge to bound.
+  await page.evaluate(() => {
+    const old = window.WPP; window.reboundHandlers = {}; window.bindAttempts = 0;
+    window.WPP = { ...old, on: (name, cb) => {
+      if (name === 'chat.new_message' && window.bindAttempts++ === 0) throw Error('loader transitioning');
+      window.reboundHandlers[name] = cb;
+    }, off: (name, cb) => { if (window.reboundHandlers[name] === cb) delete window.reboundHandlers[name]; } };
+  });
+  await page.waitForFunction(() => typeof window.reboundHandlers['chat.new_message'] === 'function');
+  await page.evaluate(() => window.reboundHandlers['chat.new_message']({ id: { id: 'AFTER_REBIND', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', body: 'Recovered reception', t: Math.floor(Date.now() / 1000) }));
+  for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'AFTER_REBIND'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(received.some(e => e.type === 'message' && e.message.id === 'AFTER_REBIND'));
+  assert.ok(received.some(e => e.type === 'receiver_error' && e.code === 'RECEIVER_BINDING'));
+  assert.ok(received.some(e => e.type === 'receiver_heartbeat'));
   const client = new WaJsClient({ profileDir: '/unused', onEvent(event) { received.push(event); } }); client.page = page;
   await page.evaluate(() => { window.WPP.contact = { getPnLidEntry: async to => ({ phoneNumber: { _serialized: '447700900123@c.us' }, contact: { pushname: 'Rose', name: 'Saved name' } }) }; });
   assert.deepEqual(await client.contactInfo('999999999999999@lid'), { name: 'Rose', phoneNumber: '447700900123' });

@@ -48,7 +48,7 @@ export function installWaBridge() {
   };
   let selfPhone = { identity: '', number: '', attemptedAt: 0 };
   const phoneFromId = value => /^([1-9]\d{6,14})@(c\.us|s\.whatsapp\.net)$/.exec(value || '')?.[1] || '';
-  let bound = false, lastState = '', lastQr = '', lastImage = '', domQrSeen = false, authenticated = false, refreshing = false;
+  let bound = null, bindings = [], lastHeartbeat = 0, lastState = '', lastQr = '', lastImage = '', domQrSeen = false, authenticated = false, refreshing = false;
   const liveSince = Math.floor(Date.now() / 1000);
   const delivered = new Map();
   let rawStore = null, lastSweep = 0;
@@ -87,10 +87,17 @@ export function installWaBridge() {
       const store = wpp.whatsapp?.MsgStore;
       if (!store) return;
       if (store !== rawStore) {
-        if (rawStore) rawStore.off?.('change:ack', receiptHandler);
-        if (rawStore) for (const event of ['add', 'change:type', 'change:body', 'change:caption']) rawStore.off?.(event, rawHandler);
-        rawStore = store; store.on('change:ack', receiptHandler);
-        for (const event of ['add', 'change:type', 'change:body', 'change:caption']) store.on(event, rawHandler);
+        if (rawStore) { try { rawStore.off?.('change:ack', receiptHandler); } catch {} }
+        if (rawStore) for (const event of ['add', 'change:type', 'change:body', 'change:caption']) { try { rawStore.off?.(event, rawHandler); } catch {} }
+        try {
+          store.on('change:ack', receiptHandler);
+          for (const event of ['add', 'change:type', 'change:body', 'change:caption']) store.on(event, rawHandler);
+          rawStore = store;
+        } catch (error) {
+          try { store.off?.('change:ack', receiptHandler); } catch {}
+          for (const event of ['add', 'change:type', 'change:body', 'change:caption']) { try { store.off?.(event, rawHandler); } catch {} }
+          rawStore = null; throw error;
+        }
         emit({ type: 'receiver_ready' });
       }
       if (Date.now() - lastSweep < 3000) return;
@@ -120,25 +127,28 @@ export function installWaBridge() {
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
-    try { await refreshOnce(); } finally { refreshing = false; }
+    try { await refreshOnce(); } catch { emit({ type: 'receiver_error', code: 'RECEIVER_BINDING' }); } finally { refreshing = false; }
   }
   async function refreshOnce() {
     readVisibleQr();
     const wpp = window.WPP;
     if (!wpp?.isReady) return;
-    if (!bound) {
-      bound = true;
-      wpp.on('conn.auth_code_change', code => {
+    if (bound !== wpp) {
+      for (const [owner, event, handler] of bindings) { try { owner.off?.(event, handler); } catch {} }
+      bindings = []; bound = null;
+      const listen = (event, handler) => { wpp.on(event, handler); bindings.push([wpp, event, handler]); };
+      listen('conn.auth_code_change', code => {
         publishCode(code?.fullCode);
         void refresh();
       });
-      wpp.on('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
-      wpp.on('conn.require_auth', () => { authenticated = false; selfPhone = { identity: '', number: '', attemptedAt: 0 }; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
-      for (const event of ['conn.main_ready', 'conn.online']) wpp.on(event, () => { void refresh(); });
-      wpp.on('conn.logout', () => emit({ type: 'logout' }));
-      wpp.on('conn.needs_update', () => emit({ type: 'needs_update' }));
-      wpp.on('chat.new_message', msg => receiveMessage(msg));
-      wpp.on('chat.msg_ack_change', event => { for (const key of event?.ids || []) publishReceipt(key, event.ack, wid(event.chat)); });
+      listen('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
+      listen('conn.require_auth', () => { authenticated = false; selfPhone = { identity: '', number: '', attemptedAt: 0 }; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
+      for (const event of ['conn.main_ready', 'conn.online']) listen(event, () => { void refresh(); });
+      listen('conn.logout', () => emit({ type: 'logout' }));
+      listen('conn.needs_update', () => emit({ type: 'needs_update' }));
+      listen('chat.new_message', msg => receiveMessage(msg));
+      listen('chat.msg_ack_change', event => { for (const key of event?.ids || []) publishReceipt(key, event.ack, wid(event.chat)); });
+      bound = wpp; lastState = '';
       emit({ type: 'receiver_ready' });
     }
     watchMessageStore(wpp);
@@ -149,6 +159,9 @@ export function installWaBridge() {
         try { const candidate = wid(wpp.conn[name]?.()); if (/^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(candidate)) { if (!identity || phoneFromId(candidate)) identity = candidate; if (phoneFromId(candidate)) break; } } catch { /* Identity modules may load after main_ready. */ }
       }
       const verifiedReady = Boolean(ready && identity);
+      if (verifiedReady && Date.now() - lastHeartbeat >= 10000) {
+        lastHeartbeat = Date.now(); emit({ type: 'receiver_heartbeat' });
+      }
       authenticated = authenticated || verifiedReady || wpp.conn.isAuthenticated();
       const status = verifiedReady ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
       let phoneNumber = phoneFromId(identity);
@@ -213,7 +226,14 @@ export class WaJsClient {
     const userAgent = (await this.browser.userAgent()).replace('HeadlessChrome/', 'Chrome/');
     await this.page.setUserAgent(userAgent);
     await this.page.setBypassCSP(true);
-    await this.page.exposeFunction('__blueWaEvent', event => { if (!this.closed) return this.onEvent(event); });
+    await this.page.exposeFunction('__blueWaEvent', event => {
+      if (this.closed) return;
+      if (event.type === 'receiver_heartbeat' || event.type === 'state' && event.status === 'connected') this.lastBridgeAt = Date.now();
+      return this.onEvent(event);
+    });
+    // Watch bridge health, never customer activity: a quiet account must stay connected.
+    this.healthTimer = setInterval(() => this.checkBridgeHealth(), 15000);
+    this.healthTimer.unref();
     // Install the DOM QR reader before navigation; it also survives page reloads.
     await this.page.evaluateOnNewDocument(installWaBridge);
     this.page.on('domcontentloaded', () => { if (!this.closed) void this.inject().catch(() => { if (!this.closed) this.onEvent({ type: 'injection_error' }); }); });
@@ -230,6 +250,11 @@ export class WaJsClient {
     }
     if (response && response.status() >= 400) throw Object.assign(new Error('WhatsApp page was rejected'), { code: `WEB_HTTP_${response.status()}` });
     await this.inject();
+  }
+  checkBridgeHealth(now = Date.now()) {
+    if (this.closed || this.healthFailed || !this.lastBridgeAt || now - this.lastBridgeAt < 90000) return;
+    this.healthFailed = true;
+    void Promise.resolve(this.onEvent({ type: 'closed', reason: 'RECEIVER_HEARTBEAT_TIMEOUT' })).catch(() => {});
   }
   inject() {
     if (!this.injecting) this.injecting = (async () => {
@@ -333,7 +358,7 @@ export class WaJsClient {
   async logout() { if (this.page && !this.page.isClosed()) await this.page.evaluate(() => window.WPP?.conn.logout()); }
   async close() {
     if (this.closing) return this.closing;
-    this.closed = true;
+    this.closed = true; clearInterval(this.healthTimer);
     this.closing = (async () => {
       let browser;
       try { browser = this.browser || await this.launching; } catch { return; }

@@ -62,6 +62,13 @@ export function renderReplyText(text, jid, contact = {}) {
   const values = { full_name: name, phone_number: phone || '未知号码' };
   return text.replace(/\{(full_name|phone_number)\}/g, (_, key) => values[key]);
 }
+export function automationError(error) {
+  if (error?.code === 'ENOENT') return '流程图片文件不存在，请重新上传图片并保存流程';
+  if (/timeout|timed out/i.test(error?.message || '')) return '发送请求超时，请检查号码连接与 WhatsApp 网络后重试';
+  if (error?.status === 403) return '订阅未开通、已到期或号码超出配额';
+  if (error?.status === 409) return '号码尚未连接或正在分配，请等待连接恢复';
+  return 'WhatsApp 发送失败，请检查号码连接；原生按钮模式可切换兼容模式验证';
+}
 export class Automation {
   constructor(config, send, report = () => {}, resolveMenu = () => null) { this.resolveMenu = resolveMenu; this.menus = new Map(); this.config = config; this.send = send; this.report = report; this.sessions = new Map(); this.seen = new Set(); this.queue = Promise.resolve(); }
   configure(config) { this.config = config; this.sessions.clear(); this.menus.clear(); }
@@ -110,6 +117,6 @@ export class Automation {
       if (this.sessions.size >= 10000) this.sessions.delete(this.sessions.keys().next().value);
       this.sessions.set(jid, { node: node.id, messageId, contact, expires: Date.now() + 30 * 60000 });
       this.report({ ok: true, node: node.name });
-    } catch (error) { this.report({ ok: false, node: node.name }); throw error; }
+    } catch (error) { this.report({ ok: false, node: node.name, error: automationError(error) }); throw error; }
   }
 }

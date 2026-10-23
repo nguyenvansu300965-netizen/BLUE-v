@@ -70,10 +70,12 @@ export class WhatsAppAccount {
         const key = `${jid}:${id}`; this.pendingReceipts.set(key, mergeReceipt(this.pendingReceipts.get(key), event.ack));
         if (this.pendingReceipts.size > 500) this.pendingReceipts.delete(this.pendingReceipts.keys().next().value);
       }
+    } else if (event.type === 'receiver_heartbeat') {
+      this.receiver.heartbeatAt = Date.now();
     } else if (event.type === 'receiver_ready') {
       this.receiver.ready = true; this.receiver.error = null; this.broadcast();
     } else if (event.type === 'receiver_error') {
-      this.receiver.error = event.code === 'MESSAGE_SERIALIZATION' ? '新消息解析异常' : '备用接收通道暂不可用'; this.broadcast();
+      this.receiver.error = event.code === 'MESSAGE_SERIALIZATION' ? '新消息解析异常' : event.code === 'RECEIVER_BINDING' ? '消息监听暂不可用，正在重新绑定' : '备用接收通道暂不可用'; this.broadcast();
     } else if (event.type === 'progress') {
       this.update({ stage: ['browser', 'page', 'inject'].includes(event.stage) ? event.stage : null, progress: String(event.detail || '').slice(0, 200) });
     } else if (event.type === 'qr_image' && typeof event.image === 'string' && event.image.startsWith('data:image/png;base64,') && event.image.length < 1000000) {
@@ -111,10 +113,12 @@ export class WhatsAppAccount {
       if (!item || !Number.isFinite(item.time) || item.time <= 0) { this.receiver.rejected++; this.broadcast(); return; }
       this.receiver.lastMessageAt = Date.now();
       const { selection, quotedId, history, ...message } = item;
-      const added = this.remember(message);
+      this.remember(message);
       this.resolveContact(item.jid);
       if (!history && !item.outgoing && item.media?.type === 'image' && item.media.size <= 5 * 1024 * 1024) void this.downloadMessageMedia(item.id).catch(() => {});
-      if (!added || history || this.store.account(this.account.id)?.managed === 1) return;
+      // History persistence and live delivery can race. The automation engine owns
+      // live-event deduplication; an existing chat row does not mean it was processed.
+      if (history || this.store.account(this.account.id)?.managed === 1) return;
       void this.automation.handle({ ...item, fromMe: item.outgoing, selection, quotedId }).catch(() => {});
     } else if (event.type === 'logout') {
       await rm(this.sessionMarker, { force: true });
@@ -124,7 +128,9 @@ export class WhatsAppAccount {
       this.update({ error: 'WhatsApp Web 要求更新，请更新 WA-JS 后重新连接' });
     } else if (event.type === 'closed') {
       await this.stop('disconnected');
-      this.update({ error: '浏览器连接已关闭，5 秒后重试' });
+      const stalled = event.reason === 'RECEIVER_HEARTBEAT_TIMEOUT';
+      if (stalled) this.logFailure({ event: 'whatsapp_receiver_stalled', accountId: this.account.id, code: event.reason });
+      this.update({ error: stalled ? '消息接收通道失去响应，5 秒后自动恢复连接（保留登录档案）' : '浏览器连接已关闭，5 秒后重试' });
       this.timer = setTimeout(() => { void this.connect().catch(() => this.stop('blocked')); }, 5000);
     } else if (event.type === 'injection_error') {
       await this.stop('error');

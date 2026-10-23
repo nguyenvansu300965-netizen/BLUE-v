@@ -35,6 +35,9 @@ test('WA-JS account profiles, events and automation are isolated; reset closes b
     assert.equal(calls.filter(c => c[0] === 'text').length, 0, 'history must not trigger automation even if a keyword matches');
     await a.syncMessages(); assert.equal(a.sync.imported, 0);
     const incoming = { type: 'message', message: { id: 'INCOMING', chatId: '123456789@c.us', body: 'hi', timestamp: Date.now() / 1000 } };
+    a.client.fetchMessages = async () => ({ messages: [incoming.message], chatCount: 1, failedChats: 0 });
+    await a.syncMessages(); await a.automation.queue;
+    assert.equal(calls.filter(c => c[0] === 'text').length, 0, 'a new message imported before its live event does not itself trigger');
     await events[0](incoming); await a.automation.queue;
     assert.equal(calls.find(c => c[0] === 'text')[2], 'Dear user Rose, hello! 123456789');
     assert.equal(store.messages(a.account.id).find(m => m.id === 'OUTGOING').text, 'Dear user Rose, hello! 123456789');

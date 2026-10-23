@@ -149,7 +149,7 @@ function renderState(state) {
   $('connect').disabled = connected || state.status === 'qr' || state.authenticated;
   $('connect').textContent = state.authenticated && !connected ? '正在完成登录…' : state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
   const last = state.automation.last;
-  $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : '发送失败'}` : ''}`;
+  $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : `发送失败：${last.error || '请检查号码连接'}`}` : ''}`;
   renderChats(); renderMessages();
 }
 function threads() {
