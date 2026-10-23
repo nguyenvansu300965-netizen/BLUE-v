@@ -159,6 +159,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     }
     const controller = new AbortController();
     const stream = await alice.request(`${base}/events`, { signal: controller.signal });
+    assert.equal(stream.headers.get('x-accel-buffering'), 'no'); assert.match(stream.headers.get('cache-control'), /no-transform/);
     const reader = stream.body.getReader(); assert.match(new TextDecoder().decode((await reader.read()).value), /"status":"idle"/);
     await admin.request(`/api/admin/users/${aliceUser.id}`, { method: 'PATCH', body: grant('basic', false) });
     const revoked = new TextDecoder().decode((await reader.read()).value); assert.match(revoked, /revoked/); controller.abort();

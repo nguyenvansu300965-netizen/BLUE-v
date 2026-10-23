@@ -263,8 +263,7 @@ try {
   assert.equal(await tab.$eval('#current-user', element => element.textContent), 'isolated-user', 'late startup identity must not restore the former user');
   assert.equal(await tab.$eval('#workspace', element => element.hidden), false);
   await page.bringToFront();
-  page.once('dialog', dialog => dialog.accept('Must not be created for the other user'));
-  await page.click('#add-account');
+  // Resuming the old tab now revalidates its workspace identity immediately.
   await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
   assert.match(await page.$eval('#auth-notice', element => element.textContent), /其他页面切换/);
   const otherAccounts = (await request(tab, '/api/accounts')).data.accounts;

@@ -7,9 +7,10 @@ let voiceRecorder = null, voiceStream = null, voiceTimer = null, recordingToken 
 let contacts = [], seenSnapshot = false, lastReceiverAt = 0, readMarks = new Map(), contactDraft = null;
 let soundEnabled = false, notificationAudio = null, lastSoundAt = 0;
 let accountsRequest = 0, creatingAccount = false;
+let realtimeCleanup = null;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
-function closeStream() { stream?.close(); stream = null; }
+function closeStream() { realtimeCleanup?.(); realtimeCleanup = null; stream?.close(); stream = null; }
 function showAuth() {
   const hadIdentity = Boolean(me);
   resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
@@ -105,11 +106,53 @@ function switchAccount() {
   window.dispatchEvent(new Event('account-changed'));
   if (!selectedAccount) return;
   const id = selectedAccount, epoch = authEpoch, owner = me.id;
-  const source = new EventSource(`/api/accounts/${id}/events?workspaceUser=${encodeURIComponent(owner)}`); stream = source;
-  const current = () => stream === source && id === selectedAccount && epoch === authEpoch && owner === me?.id;
-  source.onmessage = event => { if (current()) renderState(JSON.parse(event.data)); };
-  source.addEventListener('revoked', () => { if (!current()) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
-  source.onerror = () => { if (current()) { connected = false; $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '工作台重连中'; } };
+  let cancelled = false, pending = false, controller = null, source = null;
+  let lastSnapshotAt = 0, lastActivityAt = Date.now(), openedAt = Date.now(), snapshotVersion = 0;
+  const current = () => !cancelled && id === selectedAccount && epoch === authEpoch && owner === me?.id;
+  const pullState = async () => {
+    if (!current() || pending) return;
+    pending = true; const version = snapshotVersion; controller = new AbortController();
+    const timeout = setTimeout(() => controller?.abort(), 10000);
+    try {
+      const state = await api(`/api/accounts/${id}/state`, { signal: controller.signal });
+      // A delayed fallback response must not replace a newer pushed snapshot.
+      if (current() && version === snapshotVersion && state.account?.id === id && state.account?.user_id === owner) renderState(state);
+    } catch (error) { if (current() && error.name !== 'AbortError' && error.name !== 'StaleResponseError') $('status').textContent = '工作台正在重连…'; }
+    finally { clearTimeout(timeout); pending = false; controller = null; }
+  };
+  const open = () => {
+    if (!current()) return;
+    source?.close();
+    const next = source = new EventSource(`/api/accounts/${id}/events?workspaceUser=${encodeURIComponent(owner)}`); stream = next;
+    openedAt = lastActivityAt = Date.now();
+    const live = () => current() && source === next && stream === next;
+    next.onmessage = event => {
+      if (!live()) return;
+      try {
+        const state = JSON.parse(event.data);
+        if (state.account?.id !== id || state.account?.user_id !== owner) return;
+        lastSnapshotAt = lastActivityAt = Date.now(); snapshotVersion++; renderState(state);
+      } catch { void pullState(); }
+    };
+    next.addEventListener('heartbeat', () => { if (live()) lastActivityAt = Date.now(); });
+    next.addEventListener('revoked', () => { if (!live()) return; closeStream(); notice('登录或订阅权限已变更'); void refreshAccounts().catch(error => notice(error.message)); });
+    next.onerror = () => { if (live()) { $('status').textContent = '工作台正在重连…'; void pullState(); } };
+  };
+  const tick = () => {
+    if (!current() || document.hidden) return;
+    const now = Date.now();
+    if (!lastSnapshotAt || now - lastSnapshotAt > 7000) void pullState();
+    // Native EventSource retries errors, but cannot detect every stalled proxy stream.
+    if (source?.readyState === 2 || now - lastActivityAt > 20000 || now - Math.max(lastSnapshotAt, openedAt) > 20000) open();
+  };
+  const resume = () => { if (current() && !document.hidden) { void pullState(); tick(); } };
+  const timer = setInterval(tick, 2500);
+  window.addEventListener('online', resume); window.addEventListener('focus', resume); document.addEventListener('visibilitychange', resume);
+  realtimeCleanup = () => {
+    cancelled = true; clearInterval(timer); controller?.abort();
+    window.removeEventListener('online', resume); window.removeEventListener('focus', resume); document.removeEventListener('visibilitychange', resume);
+  };
+  open(); void pullState();
 }
 function renderState(state) {
   if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;

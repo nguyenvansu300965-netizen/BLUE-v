@@ -265,12 +265,12 @@ accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void
 accountRouter.get('/diagnostics', async (req, res) => res.json(await req.runtime.diagnostics()));
 accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot(req.user.role)));
 accountRouter.get('/events', (req, res) => {
-  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-  res.flushHeaders();
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store, no-transform', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
+  res.flushHeaders(); res.setTimeout(0); res.socket?.setKeepAlive(true, 15000);
   const rt = req.runtime; res.workspaceRole = req.user.role;
   rt.clients.set(res, () => store.session(req.sessionToken)?.id === req.user.id && store.canAccess(req.user.id, req.account) && store.allowed(req.account));
-  res.write(`data: ${JSON.stringify(rt.snapshot(req.user.role))}\n\n`);
-  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
+  res.write(`retry: 3000\ndata: ${JSON.stringify(rt.snapshot(req.user.role))}\n\n`);
+  const heartbeat = setInterval(() => res.write('event: heartbeat\ndata: {}\n\n'), 10000);
   res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
 });
 accountRouter.post('/connect', async (req, res) => {
