@@ -85,12 +85,21 @@ try {
     window.fixtureHandlers['chat.new_message'](message);
     window.rawModels.push({ id: { id: 'MISSED_EVENT', remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'New chat without event callback', t: Math.floor(Date.now() / 1000) });
     window.rawModels.push({ id: { id: 'OLD_HISTORY', remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'Old history must not become live', t: Math.floor(Date.now() / 1000) - 86400 });
+    for (let i = 0; i < 250; i++) window.rawModels.push({ id: { id: `OLD-${i}`, remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'Old collection tail', t: Math.floor(Date.now() / 1000) - 86400 });
+    const perChatMessage = { id: { id: 'CHAT_COLLECTION_ONLY', remote: { _serialized: '987654321@c.us' }, fromMe: false }, type: 'chat', body: 'New message outside global MsgStore', t: Math.floor(Date.now() / 1000) };
+    window.WPP.whatsapp.ChatStore = { getModelsArray: () => [{ msgs: { getModelsArray: () => [perChatMessage, window.rawModels[0]] } }] };
+
   });
   for (let i = 0; i < 40 && !received.some(e => e.type === 'message' && e.message.id === 'MISSED_EVENT'); i++) await new Promise(resolve => setTimeout(resolve, 200));
   const live = received.filter(e => e.type === 'message').slice(beforeRaw);
   assert.equal(live.filter(e => e.message.id === 'DECRYPTED').length, 1, 'ciphertext must not mask plaintext and dual events must deduplicate');
   assert.ok(live.some(e => e.message.id === 'MISSED_EVENT'), 'store sweep must recover a missed event in a new conversation');
   assert.ok(!live.some(e => e.message.id === 'OLD_HISTORY'), 'old history must not trigger live reception');
+  assert.equal(live.filter(e => e.message.id === 'MISSED_EVENT').length, 1, 'a fresh message before 250 old tail records is recovered once');
+  assert.equal(live.filter(e => e.message.id === 'CHAT_COLLECTION_ONLY').length, 1, 'per-chat live models are recovered when missing from global MsgStore');
+  const sweepStats = await page.evaluate(() => window.__blueWaDiagnostics.sweep);
+  assert.ok(sweepStats.globalModels > 200); assert.equal(sweepStats.chatCollections, 1); assert.ok(sweepStats.recentModels >= 2);
+
   await page.evaluate(() => {
     const msg = { id: { id: 'LATE_CAPTION', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'image', t: Math.floor(Date.now() / 1000) };
     window.rawHandlers.add(msg);

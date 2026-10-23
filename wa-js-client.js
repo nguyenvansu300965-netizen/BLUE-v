@@ -153,8 +153,40 @@ export function installWaBridge() {
       }
       if (Date.now() - lastSweep < 3000) return;
       lastSweep = Date.now();
-      const models = store.getModelsArray?.() || store.models || store._models || [];
-      for (const msg of Array.isArray(models) ? models.slice(-200) : []) { receiptHandler(msg); receiveMessage(msg, 'store-sweep'); }
+      const modelsOf = collection => {
+        if (!collection) return [];
+        try {
+          const values = collection.getModelsArray?.() || collection.toArray?.() || collection.models || collection._models || [];
+          return Array.isArray(values) ? values : [];
+        } catch { return []; }
+      };
+      const global = modelsOf(store), chats = modelsOf(wpp.whatsapp?.ChatStore);
+      const seenModels = new Set();
+      const sweep = { at: Date.now(), globalModels: global.length, chatCollections: 0, checkedModels: 0, recentModels: 0, newestAgeSeconds: null };
+      let newest = 0;
+      const scan = models => {
+        for (const msg of models) {
+          if (!msg || seenModels.has(msg)) continue;
+          seenModels.add(msg); sweep.checkedModels++;
+          let timestamp;
+          try { timestamp = Number(msg.t || msg.get?.('t') || msg.attributes?.t || 0); } catch { continue; }
+          if (!Number.isFinite(timestamp) || timestamp <= 0) continue;
+          if (timestamp > newest) newest = timestamp;
+          // Collection position is not chronological. Inspect timestamps across
+          // the complete loaded set, serializing only messages from this session.
+          if (timestamp < liveSince - 2) { stats.skipped.old++; continue; }
+          sweep.recentModels++;
+          receiptHandler(msg); receiveMessage(msg, 'store-sweep');
+        }
+      };
+      scan(global);
+      // Some WhatsApp builds keep live messages in per-chat collections before
+      // the global MsgStore is updated. Poll those collections as a second path.
+      for (const chat of chats) {
+        try { if (chat.msgs) { sweep.chatCollections++; scan(modelsOf(chat.msgs)); } } catch {}
+      }
+      if (newest) sweep.newestAgeSeconds = Math.floor(Date.now() / 1000 - newest);
+      stats.sweep = sweep;
     } catch { emit({ type: 'receiver_error', code: 'MESSAGE_STORE_UNAVAILABLE' }); }
   }
   function rawHandler(msg) { receiveMessage(msg, 'store-event'); }
