@@ -28,6 +28,7 @@ export function installWaBridge() {
     const serialized = typeof key === 'string' ? key : key?._serialized || '';
     const fromMe = typeof key?.fromMe === 'boolean' ? key.fromMe : serialized.startsWith('true_');
     const native = msg.nativeFlowResponseMessage || msg.interactiveResponseMessage?.nativeFlowResponseMessage;
+    const string = (...values) => values.find(value => typeof value === 'string' && value.length) || '';
     const buttons = [];
     for (const button of msg.interactivePayload?.buttons || []) {
       try { const params = JSON.parse(button.buttonParamsJson || '{}'); if (typeof params.display_text === 'string') buttons.push({ label: params.display_text }); } catch {}
@@ -37,13 +38,13 @@ export function installWaBridge() {
       id: typeof key === 'string' ? key : key?.id || key?._serialized,
       chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe, sourceId: serialized, ack: Number.isInteger(msg.ack) ? msg.ack : undefined,
       mime: typeof msg.mimetype === 'string' ? msg.mimetype : '', filename: typeof msg.filename === 'string' ? msg.filename : '', size: Number(msg.size || 0),
-      body: typeof msg.body === 'string' ? msg.body : '', caption: typeof msg.caption === 'string' ? msg.caption : '',
+      body: string(msg.body, msg.text, msg.content, msg.pollName, msg.vcardFormattedName), caption: string(msg.caption),
       buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.thumbnail === 'string' ? msg.thumbnail : typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
       name: fallbackName || (typeof msg.notifyName === 'string' ? msg.notifyName : ''), timestamp: Number(msg.t || 0), type: msg.type,
       history: history || Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
       selectedId: msg.selectedId || msg.listResponse?.singleSelectReply?.selectedRowId,
-      label: msg.selectedButtonText || msg.buttonsResponse?.selectedDisplayText,
-      nativeFlowParams: native?.paramsJson, quotedId: msg.quotedStanzaID || msg.quotedMsgId?.id || msg.quotedMsgKey?.id
+      label: msg.selectedButtonText || msg.buttonsResponse?.selectedDisplayText || msg.listResponse?.title,
+      nativeFlowParams: native?.paramsJson || msg.nativeFlowParams, quotedId: msg.quotedStanzaID || msg.quotedMsgId?.id || msg.quotedMsgKey?.id
     };
   };
   let selfPhone = { identity: '', number: '', attemptedAt: 0 };
@@ -73,11 +74,17 @@ export function installWaBridge() {
       const raw = window.__blueSerializeWaMessage(msg);
       if (['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return;
       if (!raw.id || !raw.chatId || !raw.timestamp) return;
-      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !['image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) return;
+      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !raw.label && !raw.hasMediaAttachment && !raw.mime && !['poll_creation', 'poll_update', 'multi_vcard', 'live_location', 'reaction', 'revoked', 'call_log', 'album', 'interactive', 'list', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) return;
       if (source !== 'event' && raw.timestamp < liveSince - 2) return;
       const key = `${raw.chatId}:${typeof raw.id === 'string' ? raw.id : ''}`;
-      if (delivered.has(key)) return;
-      delivered.set(key, true);
+      // A MsgModel can arrive before its body/caption/type finishes loading.
+      // Suppress identical snapshots, but publish later content enrichment.
+      const content = JSON.stringify([raw.type, raw.body, raw.caption, raw.selectedButtonId, raw.selectedId, raw.nativeFlowParams, raw.label, raw.mime, raw.filename, raw.size, raw.buttons, raw.thumbnail, raw.mediaType]);
+      let hash = 2166136261;
+      for (let i = 0; i < content.length; i++) hash = Math.imul(hash ^ content.charCodeAt(i), 16777619);
+      const signature = `${content.length}:${hash >>> 0}`;
+      if (delivered.get(key) === signature) return;
+      delivered.set(key, signature);
       if (delivered.size > 2000) delivered.delete(delivered.keys().next().value);
       emit({ type: 'message', message: raw, source });
     } catch { emit({ type: 'receiver_error', code: 'MESSAGE_SERIALIZATION' }); }

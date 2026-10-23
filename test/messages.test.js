@@ -39,3 +39,13 @@ test('incoming media retain download identity and readable type labels', () => {
   }
   assert.equal(normalizeWaMessage({ ...raw, type: 'image', caption: '客户截图' }).text, '客户截图');
 });
+
+
+test('interactive media and special message types retain readable identities', () => {
+  const raw = { id: 'NEW', chatId: '123456789@c.us', timestamp: 123, body: '' };
+  for (const [extra, expected] of [[{ type: 'interactive', mediaType: 'VIDEO' }, '[视频]'], [{ type: 'unknown', mime: 'audio/ogg' }, '[音频]'], [{ type: 'poll_creation' }, '[投票]'], [{ type: 'multi_vcard' }, '[联系人名片]']]) {
+    const item = normalizeWaMessage({ ...raw, ...extra }); assert.equal(item.text, expected); assert.equal(item.messageType, extra.type);
+  }
+  const choice = normalizeWaMessage({ ...raw, type: 'interactive_response', nativeFlowParams: '{"id":"flow:start:0","display_text":"English"}' });
+  assert.equal(choice.selection, 'flow:start:0'); assert.equal(choice.text, 'English');
+});

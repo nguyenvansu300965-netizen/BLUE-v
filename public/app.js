@@ -215,6 +215,7 @@ function renderMessages() {
     if (date !== day) { const label = document.createElement('div'); label.className = 'day-label'; label.textContent = date; area.append(label); day = date; }
     const bubble = document.createElement('div'); bubble.className = `bubble${message.outgoing ? ' outgoing' : ''}`;
     const text = document.createElement('div'); text.className = 'bubble-text'; text.textContent = message.text;
+    if (message.text === '[非文本消息]') text.title = `消息类型：${message.messageType || '未知'}；可点击同步消息重新读取，若仍不支持请在手机查看`;
     const time = document.createElement('span'); time.className = 'bubble-time'; time.textContent = `${message.automatic ? '自动回复 · ' : ''}${new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     if (message.outgoing && !message.revoked) time.append(receiptIndicator(message));
     const imageUrl = /^[a-f0-9]{32}\.(png|jpg|webp)$/.test(message.image || '') ? `/api/accounts/${selectedAccount}/media/${message.image}` : /^data:image\/(jpeg|png|webp);base64,/.test(message.thumbnail || '') ? message.thumbnail : null;

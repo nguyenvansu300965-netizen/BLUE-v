@@ -92,6 +92,18 @@ try {
   assert.ok(live.some(e => e.message.id === 'MISSED_EVENT'), 'store sweep must recover a missed event in a new conversation');
   assert.ok(!live.some(e => e.message.id === 'OLD_HISTORY'), 'old history must not trigger live reception');
   await page.evaluate(() => {
+    const msg = { id: { id: 'LATE_CAPTION', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'image', t: Math.floor(Date.now() / 1000) };
+    window.rawHandlers.add(msg);
+    msg.caption = 'Caption arrived after media'; window.rawHandlers['change:caption'](msg);
+    window.fixtureHandlers['chat.new_message'](msg);
+    window.fixtureHandlers['chat.new_message']({ id: { id: 'TEXT_ALIAS', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', text: 'Alternate text field', t: Math.floor(Date.now() / 1000) });
+  });
+  for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'TEXT_ALIAS'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  const enriched = received.filter(e => e.type === 'message' && e.message.id === 'LATE_CAPTION');
+  assert.equal(enriched.length, 2, 'later caption must arrive once, identical callbacks deduplicate');
+  assert.equal(enriched[1].message.caption, 'Caption arrived after media');
+  assert.equal(received.find(e => e.type === 'message' && e.message.id === 'TEXT_ALIAS').message.body, 'Alternate text field');
+  await page.evaluate(() => {
     const id = { id: 'RECEIPT', remote: { _serialized: '123456789@c.us' }, fromMe: true };
     window.fixtureHandlers['chat.msg_ack_change']({ ack: 2, ids: [id], chat: id.remote });
     window.fixtureHandlers['chat.msg_ack_change']({ ack: 2, ids: [id], chat: id.remote });

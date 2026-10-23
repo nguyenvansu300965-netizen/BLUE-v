@@ -1,5 +1,5 @@
 import { activationHash, validateBatch } from './activation-codes.js';
-import { displayMessage, isImageEncoding, receiptAck, mergeReceipt } from './messages.js';
+import { displayMessage, isImageEncoding, isMessagePlaceholder, receiptAck, mergeReceipt } from './messages.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -269,10 +269,11 @@ export class Store {
       const previous = JSON.parse(this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, item.id).payload);
       if (previous.revoked) return false;
       if (item.outgoing && previous.ack !== undefined) item = { ...item, ack: mergeReceipt(previous.ack, item.ack) };
-      const repair = isImageEncoding(previous.text) || (['[图片]', '[非文本消息]'].includes(previous.text) && item.text !== previous.text && !isImageEncoding(item.text));
+      const repair = isImageEncoding(previous.text) || (isMessagePlaceholder(previous.text) && item.text !== previous.text && !isImageEncoding(item.text) && (!isMessagePlaceholder(item.text) || previous.text === '[非文本消息]'));
+      const typeRepair = item.messageType && (!previous.messageType || previous.messageType === 'unknown') && item.messageType !== previous.messageType;
       const mediaRepair = item.media && !previous.media && !previous.image && !previous.attachment;
-      if (((item.automatic || item.manual) && item.outgoing) || repair || mediaRepair) {
-        const merged = JSON.stringify(mediaRepair && !repair && !item.automatic && !item.manual ? { ...previous, media: item.media, ...(item.thumbnail && !previous.thumbnail ? { thumbnail: item.thumbnail } : {}) } : { ...previous, ...item });
+      if (((item.automatic || item.manual) && item.outgoing) || repair || mediaRepair || typeRepair) {
+        const merged = JSON.stringify((mediaRepair || typeRepair) && !repair && !item.automatic && !item.manual ? { ...previous, ...(item.messageType ? { messageType: item.messageType } : {}), ...(item.media ? { media: item.media } : {}), ...(item.thumbnail && !previous.thumbnail ? { thumbnail: item.thumbnail } : {}) } : { ...previous, ...item });
         if (merged !== JSON.stringify(previous)) {
           this.db.prepare('UPDATE messages SET payload=? WHERE account_id=? AND id=?').run(merged, account, item.id);
           return true;

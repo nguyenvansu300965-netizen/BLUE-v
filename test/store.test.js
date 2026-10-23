@@ -96,3 +96,22 @@ test('legacy schema migrates without moving ownership or changing plan limits; m
     assert.equal(store.canAccess(user.id, old), true, 'legacy number remains unchanged');
   } finally { await runtime?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+
+test('late message enrichment replaces placeholders while preserving downloaded attachments and rich messages', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-enrichment-')); const store = new Store(dir);
+  try {
+    await store.bootstrap('enrich-admin', '123456'); const account = store.createAccount(store.byName('enrich-admin').id, 'Test');
+    const base = { id: 'LATE', jid: '123456789@s.whatsapp.net', time: Date.now(), outgoing: false, text: '[视频]', messageType: 'video', attachment: { id: 'a'.repeat(32) } };
+    store.remember(account.id, base);
+    assert.equal(store.remember(account.id, { id: base.id, jid: base.jid, time: base.time, text: '迟到的文案', messageType: 'video' }), true);
+    // Real normalized events omit attachment, rather than assigning undefined.
+    const next = { ...base, text: '完整内容' }; delete next.attachment;
+    const old = { ...base, id: 'PLAIN', text: '[非文本消息]', messageType: 'unknown' };
+    store.remember(account.id, old); store.remember(account.id, { ...next, id: 'PLAIN', messageType: 'chat' });
+    const repaired = store.messages(account.id).find(item => item.id === 'PLAIN');
+    assert.equal(repaired.text, '完整内容'); assert.equal(repaired.attachment.id, base.attachment.id);
+    store.remember(account.id, { ...old, messageType: 'chat' });
+    assert.equal(store.messages(account.id).find(item => item.id === 'PLAIN').text, '完整内容');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
