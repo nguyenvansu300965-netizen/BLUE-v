@@ -17,6 +17,14 @@ export function installWaBridge() {
   const stats = window.__blueWaDiagnostics = { schema: 2, byType: {}, lastEmitted: null, startedAt: Date.now(), observed: 0, serialized: 0, emitted: 0, skipped: { system: 0, identity: 0, empty: 0, old: 0, duplicate: 0, errors: 0 }, types: {}, samples: [], textRecovery: { attempted: 0, resolved: 0, failed: 0 } };
   const fieldShape = read => { try { const value = read(); return { kind: value === null ? 'null' : typeof value, ...(typeof value === 'string' ? { length: value.length } : {}) }; } catch { return { kind: 'throws' }; } };
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
+  window.__blueWaStream = () => {
+    try {
+      const data = window.WPP?.conn.getStreamData?.();
+      const mode = ['QR', 'MAIN', 'SYNCING', 'OFFLINE', 'CONFLICT', 'PROXYBLOCK', 'TOS_BLOCK', 'SMB_TOS_BLOCK', 'DEPRECATED_VERSION'].includes(data?.mode) ? data.mode : null;
+      const info = ['OFFLINE', 'OPENING', 'PAIRING', 'SYNCING', 'RESUMING', 'CONNECTING', 'NORMAL'].includes(data?.info) ? data.info : null;
+      return { mode, info, connected: mode === 'MAIN' && (info === 'NORMAL' || data?.info == null) };
+    } catch { return { mode: null, info: null, connected: false }; }
+  };
   const wid = value => {
     if (!value) return '';
     if (typeof value === 'string') return value;
@@ -226,7 +234,7 @@ export function installWaBridge() {
       });
       listen('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
       listen('conn.require_auth', () => { authenticated = false; selfPhone = { identity: '', number: '', attemptedAt: 0 }; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
-      for (const event of ['conn.main_ready', 'conn.online']) listen(event, () => { void refresh(); });
+      for (const event of ['conn.main_ready', 'conn.online', 'conn.stream_mode_changed', 'conn.stream_info_changed']) listen(event, () => { void refresh(); });
       listen('conn.logout', () => emit({ type: 'logout' }));
       listen('conn.needs_update', () => emit({ type: 'needs_update' }));
       listen('chat.new_message', msg => receiveMessage(msg));
@@ -241,12 +249,13 @@ export function installWaBridge() {
       if (ready) for (const name of ['getMyUserId', 'getMyUserWid', 'getMyUserLid']) {
         try { const candidate = wid(wpp.conn[name]?.()); if (/^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(candidate)) { if (!identity || phoneFromId(candidate)) identity = candidate; if (phoneFromId(candidate)) break; } } catch { /* Identity modules may load after main_ready. */ }
       }
-      const verifiedReady = Boolean(ready && identity);
+      const stream = window.__blueWaStream();
+      const verifiedReady = Boolean(ready && identity && stream.mode !== 'QR');
       if (verifiedReady && Date.now() - lastHeartbeat >= 10000) {
-        lastHeartbeat = Date.now(); emit({ type: 'receiver_heartbeat' });
+        lastHeartbeat = Date.now(); emit({ type: 'receiver_heartbeat', stream });
       }
-      authenticated = authenticated || verifiedReady || wpp.conn.isAuthenticated();
-      const status = verifiedReady ? (wpp.conn.isOnline() ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
+      authenticated = stream.mode === 'QR' ? false : authenticated || verifiedReady || wpp.conn.isAuthenticated();
+      const status = verifiedReady ? (stream.connected ? 'connected' : 'disconnected') : authenticated ? 'connecting' : 'qr';
       let phoneNumber = phoneFromId(identity);
       if (verifiedReady && !phoneNumber) {
         if (selfPhone.identity !== identity) selfPhone = { identity, number: '', attemptedAt: 0 };
@@ -262,8 +271,8 @@ export function installWaBridge() {
         phoneNumber = selfPhone.number;
       }
       const user = verifiedReady ? { id: identity, phoneNumber } : null;
-      const stateKey = `${status}:${identity}:${phoneNumber}:${authenticated}`;
-      if (stateKey !== lastState) { lastState = stateKey; emit({ type: 'state', status, user, authenticated }); }
+      const stateKey = `${status}:${identity}:${phoneNumber}:${authenticated}:${stream.mode}:${stream.info}`;
+      if (stateKey !== lastState) { lastState = stateKey; emit({ type: 'state', status, user, authenticated, stream }); }
       if (!authenticated && !domQrSeen) {
         const code = await wpp.conn.getAuthCode();
         publishCode(code?.fullCode);
@@ -311,7 +320,7 @@ export class WaJsClient {
     await this.page.setBypassCSP(true);
     await this.page.exposeFunction('__blueWaEvent', event => {
       if (this.closed) return;
-      if (event.type === 'receiver_heartbeat' || event.type === 'state' && event.status === 'connected') this.lastBridgeAt = Date.now();
+      this.observeHealth(event);
       return this.onEvent(event);
     });
     // Watch bridge health, never customer activity: a quiet account must stay connected.
@@ -334,10 +343,22 @@ export class WaJsClient {
     if (response && response.status() >= 400) throw Object.assign(new Error('WhatsApp page was rejected'), { code: `WEB_HTTP_${response.status()}` });
     await this.inject();
   }
+  observeHealth(event, now = Date.now()) {
+    if (event.type === 'receiver_heartbeat' || event.type === 'state' && event.status === 'connected') this.lastBridgeAt = now;
+    if (!event.stream) return;
+    if (event.stream.mode === 'QR') this.lastBridgeAt = null;
+    if (event.stream.connected) { this.wasTransportConnected = true; this.transportUnhealthyAt = null; }
+    else if ((this.wasTransportConnected || event.stream.mode === 'OFFLINE') && event.stream.mode !== 'QR' && event.stream.mode !== 'CONFLICT' && !['PROXYBLOCK', 'TOS_BLOCK', 'SMB_TOS_BLOCK', 'DEPRECATED_VERSION'].includes(event.stream.mode)) this.transportUnhealthyAt ??= now;
+    else this.transportUnhealthyAt = null;
+  }
   checkBridgeHealth(now = Date.now()) {
-    if (this.closed || this.healthFailed || !this.lastBridgeAt || now - this.lastBridgeAt < 90000) return;
+    if (this.closed || this.healthFailed) return;
+    let reason;
+    if (this.transportUnhealthyAt && now - this.transportUnhealthyAt >= 120000) reason = 'WHATSAPP_STREAM_STALLED';
+    else if (this.lastBridgeAt && now - this.lastBridgeAt >= 90000) reason = 'RECEIVER_HEARTBEAT_TIMEOUT';
+    if (!reason) return;
     this.healthFailed = true;
-    void Promise.resolve(this.onEvent({ type: 'closed', reason: 'RECEIVER_HEARTBEAT_TIMEOUT' })).catch(() => {});
+    void Promise.resolve(this.onEvent({ type: 'closed', reason })).catch(() => {});
   }
   inject() {
     if (!this.injecting) this.injecting = (async () => {
@@ -385,7 +406,7 @@ export class WaJsClient {
     return this.page.evaluate(() => {
       const version = value => typeof value === 'string' && /^[a-z0-9.+_-]{1,60}$/i.test(value) ? value : null;
       const ready = name => { try { return Boolean(window.WPP?.conn?.[name]?.()); } catch { return null; } };
-      return { waJsVersion: version(window.WPP?.version), waWebVersion: version(window.Debug?.VERSION), mainReady: ready('isMainReady'), online: ready('isOnline'), bridgeInstalled: Boolean(window.__blueWaBridge), storeAvailable: Boolean(window.WPP?.whatsapp?.MsgStore), bridge: window.__blueWaDiagnostics || null };
+      return { waJsVersion: version(window.WPP?.version), waWebVersion: version(window.Debug?.VERSION), mainReady: ready('isMainReady'), online: ready('isOnline'), stream: window.__blueWaStream?.() || null, bridgeInstalled: Boolean(window.__blueWaBridge), storeAvailable: Boolean(window.WPP?.whatsapp?.MsgStore), bridge: window.__blueWaDiagnostics || null };
     });
   }
   async readMessage(sourceId, jid) {

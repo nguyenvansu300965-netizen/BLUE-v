@@ -25,7 +25,7 @@ try {
   const qrCount = loginEvents.filter(e => ['qr', 'qr_image'].includes(e.type)).length;
   await loginPage.evaluate(() => {
     window.loginHandlers = {};
-    window.WPP = { isReady: true, on: (name, cb) => { window.loginHandlers[name] = cb; }, conn: { isMainReady: () => false, isOnline: () => true, isAuthenticated: () => false, getAuthCode: async () => ({ fullCode: 'different-api-code' }) } };
+    window.WPP = { isReady: true, on: (name, cb) => { window.loginHandlers[name] = cb; }, conn: { isMainReady: () => false, isOnline: () => true, getStreamData: () => ({ mode: 'MAIN', info: 'NORMAL' }), isAuthenticated: () => false, getAuthCode: async () => ({ fullCode: 'different-api-code' }) } };
   });
   await loginPage.waitForFunction(() => Boolean(window.loginHandlers['conn.auth_code_change']));
   await loginPage.evaluate(() => { window.loginHandlers['conn.auth_code_change']({ fullCode: 'different-api-code' }); });
@@ -43,7 +43,7 @@ try {
   await page.evaluate(() => {
     const handlers = {}; window.fixtureHandlers = handlers; window.sent = [];
     window.WPP = { isReady: true, on: (name, callback) => { handlers[name] = callback; },
-      conn: { isMainReady: () => false, isOnline: () => true, isAuthenticated: () => false, getAuthCode: async () => ({ fullCode: 'test-qr-only' }), getMyUserId: () => ({ toString: () => '123456789@c.us' }) },
+      conn: { isMainReady: () => false, isOnline: () => true, getStreamData: () => ({ mode: 'MAIN', info: 'NORMAL' }), isAuthenticated: () => false, getAuthCode: async () => ({ fullCode: 'test-qr-only' }), getMyUserId: () => ({ toString: () => '123456789@c.us' }) },
       chat: { sendTextMessage: async (to, text, options) => { window.sent.push({ kind: 'text', to, text, options }); return { id: `true_${to}_TEXT`, ack: 1 }; }, sendFileMessage: async (to, data, options) => { window.sent.push({ kind: 'image', to, data, options }); return { id: `true_${to}_IMAGE`, ack: 1 }; } }
     };
   });
@@ -67,6 +67,22 @@ try {
   });
   for (let i = 0; i < 20 && !received.some(e => e.type === 'message'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.ok(received.some(event => event.type === 'state' && event.status === 'connected' && event.user?.id === '123456789@c.us'), 'identity becoming available must emit connected even when main_ready remains true');
+  const beforeOffline = received.length;
+  await page.evaluate(() => {
+    window.WPP.conn.getStreamData = () => ({ mode: 'OFFLINE', info: 'CONNECTING' });
+    window.fixtureHandlers['conn.stream_mode_changed']();
+  });
+  for (let i = 0; i < 20 && !received.slice(beforeOffline).some(e => e.type === 'state' && e.status === 'disconnected'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(received.slice(beforeOffline).some(e => e.type === 'state' && e.status === 'disconnected' && e.stream.mode === 'OFFLINE'), 'online browser and latched main_ready cannot mask an offline WhatsApp stream');
+  assert.ok(!received.slice(beforeOffline).some(e => e.type === 'state' && e.status === 'connected'));
+  await page.evaluate(() => { window.WPP.conn.getStreamData = () => ({ mode: 'MAIN', info: 'NORMAL' }); window.fixtureHandlers['conn.stream_info_changed'](); });
+  await page.evaluate(() => { window.WPP.conn.getStreamData = () => ({ mode: 'QR', info: 'PAIRING' }); window.fixtureHandlers['conn.stream_mode_changed'](); });
+  await page.waitForFunction(() => window.__blueWaStream().mode === 'QR');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(received.some(e => e.type === 'state' && e.status === 'qr' && e.stream?.mode === 'QR' && !e.user && !e.authenticated), 'latched main_ready and cached identity cannot mask QR pairing');
+  await page.evaluate(() => { window.WPP.conn.getStreamData = () => ({ mode: 'MAIN' }); window.fixtureHandlers['conn.stream_mode_changed'](); });
+  assert.equal(await page.evaluate(() => window.__blueWaStream().connected), true, 'MAIN supports the documented optional stream info');
+
   const reply = normalizeWaMessage(received.find(e => e.type === 'message').message);
   assert.equal(reply.selection, 'flow:welcome:0'); assert.equal(reply.quotedId, 'TEXT'); assert.equal(reply.jid, '123456789@s.whatsapp.net');
   await page.evaluate(() => {
@@ -230,7 +246,7 @@ try {
   await identityPage.evaluate(() => {
     window.handlers = {}; window.selfLookups = [];
     window.WPP = { isReady: true, on: (name, callback) => { window.handlers[name] = callback; },
-      conn: { isMainReady: () => true, isOnline: () => true, isAuthenticated: () => true, getMyUserId: () => ({ _serialized: '999999999999999@lid' }) },
+      conn: { isMainReady: () => true, isOnline: () => true, getStreamData: () => ({ mode: 'MAIN', info: 'NORMAL' }), isAuthenticated: () => true, getMyUserId: () => ({ _serialized: '999999999999999@lid' }) },
       contact: { getPnLidEntry: async id => { window.selfLookups.push(id); return { phoneNumber: { _serialized: '447700900123@c.us' } }; } }
     };
   });

@@ -72,6 +72,7 @@ export class WhatsAppAccount {
       }
     } else if (event.type === 'receiver_heartbeat') {
       this.receiver.heartbeatAt = Date.now();
+      if (event.stream) this.receiver.stream = event.stream;
     } else if (event.type === 'receiver_ready') {
       this.receiver.ready = true; this.receiver.error = null; this.broadcast();
     } else if (event.type === 'receiver_error') {
@@ -87,6 +88,7 @@ export class WhatsAppAccount {
     } else if (event.type === 'state') {
       if (!['connected', 'connecting', 'disconnected', 'qr'].includes(event.status)) return;
       const user = typeof event.user?.id === 'string' && /^[0-9]+@(c\.us|s\.whatsapp\.net|lid)$/.test(event.user.id) ? { id: toStoredJid(event.user.id), phoneNumber: /^[1-9]\d{6,14}$/.test(event.user.phoneNumber || '') ? event.user.phoneNumber : /^([1-9]\d{6,14})@(c\.us|s\.whatsapp\.net)$/.exec(event.user.id)?.[1] || '' } : null;
+      if (event.stream) this.receiver.stream = event.stream;
       const missingIdentity = event.status === 'connected' && !user;
       if (missingIdentity) event = { ...event, status: 'connecting', authenticated: Boolean(event.authenticated) };
       if (event.authenticated && !this.state.authenticated && event.status !== 'connected') {
@@ -98,7 +100,7 @@ export class WhatsAppAccount {
         this.startupTimer.unref();
       }
 
-      this.update({ status: event.status, user, authenticated: Boolean(event.authenticated || event.status === 'connected'), progress: missingIdentity ? '正在核实 WhatsApp 登录身份，尚未取得当前账号，请等待二维码或登录完成…' : event.authenticated && event.status !== 'connected' ? '已扫码，正在关联设备并同步，请勿重复扫码或重新连接…' : this.state.progress, qr: event.authenticated || event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? 'WhatsApp 连接中断，浏览器正在重连' : null });
+      this.update({ status: event.status, user, authenticated: Boolean(event.authenticated || event.status === 'connected'), progress: missingIdentity ? '正在核实 WhatsApp 登录身份，尚未取得当前账号，请等待二维码或登录完成…' : event.authenticated && event.status !== 'connected' ? '已扫码，正在关联设备并同步，请勿重复扫码或重新连接…' : this.state.progress, qr: event.authenticated || event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? `WhatsApp 通信流未就绪（${event.stream?.mode || '未知'}/${event.stream?.info || '未知'}），正在等待恢复` : null });
       if (event.status === 'connected') {
         clearTimeout(this.startupTimer);
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
@@ -135,7 +137,7 @@ export class WhatsAppAccount {
       this.update({ error: 'WhatsApp Web 要求更新，请更新 WA-JS 后重新连接' });
     } else if (event.type === 'closed') {
       await this.stop('disconnected');
-      const stalled = event.reason === 'RECEIVER_HEARTBEAT_TIMEOUT';
+      const stalled = ['RECEIVER_HEARTBEAT_TIMEOUT', 'WHATSAPP_STREAM_STALLED'].includes(event.reason);
       if (stalled) this.logFailure({ event: 'whatsapp_receiver_stalled', accountId: this.account.id, code: event.reason });
       this.update({ error: stalled ? '消息接收通道失去响应，5 秒后自动恢复连接（保留登录档案）' : '浏览器连接已关闭，5 秒后重试' });
       this.timer = setTimeout(() => { void this.connect().catch(() => this.stop('blocked')); }, 5000);
