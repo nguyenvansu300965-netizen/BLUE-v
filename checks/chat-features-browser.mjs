@@ -72,6 +72,18 @@ try {
   const geometry = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, view: innerHeight, content: document.getElementById('messages').scrollHeight, height: document.getElementById('messages').clientHeight }));
   assert.ok(geometry.content > geometry.height); assert.ok(geometry.page <= geometry.view + 1);
   assert.equal(await page.$eval('.rail', el => el.getBoundingClientRect().top), before);
+  await page.setRequestInterception(true);
+  page.on('request', request => {
+    if (request.url().endsWith('/messages/PLAIN_RETRY/refresh')) {
+      void request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ recovered: true, message: { id: 'PLAIN_RETRY', jid, text: '补读的普通文字', messageType: 'chat', outgoing: false, time: Date.now() } }) });
+    } else void request.continue();
+  });
+  await page.evaluate(() => {
+    messages.push({ id: 'PLAIN_RETRY', jid: selectedThread, text: '[非文本消息]', messageType: 'chat', outgoing: false, time: Date.now() }); renderMessages();
+  });
+  await page.click('.reread-message');
+  await page.waitForFunction(() => document.getElementById('messages').textContent.includes('补读的普通文字'));
+  assert.equal(await page.$$eval('.reread-message', els => els.length), 0);
   await page.setViewport({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);

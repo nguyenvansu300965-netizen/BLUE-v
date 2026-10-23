@@ -227,6 +227,23 @@ export class WhatsAppAccount {
       if (name || phone) { this.store.updateContact(this.account.id, jid, { name, phone }); this.broadcast(); }
     }).catch(() => {});
   }
+  async refreshMessage(id) {
+    this.requireConnected();
+    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    if (!message || message.revoked) throw new AppError(404, '消息不存在或已撤回');
+    const generation = this.generation;
+    const sourceId = message.sourceId || `${Boolean(message.outgoing)}_${toWaJid(message.jid)}_${message.id}`;
+    let raw;
+    try { raw = await this.client.readMessage(sourceId, message.jid); }
+    catch { throw new AppError(400, 'WhatsApp 暂未提供消息正文，请稍后重试，并确认手机端可以查看该条消息'); }
+    this.requireConnected();
+    if (generation !== this.generation) throw new AppError(409, '号码连接已变更，请重试');
+    const item = normalizeWaMessage({ ...raw, history: true });
+    if (!item || item.id !== message.id || item.jid !== message.jid || item.outgoing !== Boolean(message.outgoing) || !Number.isFinite(item.time) || item.time <= 0) throw new AppError(400, '重新读取结果不匹配，未修改原消息');
+    const { selection, quotedId, history, ...repaired } = item;
+    this.remember(repaired);
+    return { message: this.store.messages(this.account.id).find(item => item.id === id), recovered: item.text !== '[非文本消息]' };
+  }
   downloadMessageMedia(id) {
     if (this.mediaDownloads.has(id)) return this.mediaDownloads.get(id);
     const message = this.store.messages(this.account.id).find(item => item.id === id);

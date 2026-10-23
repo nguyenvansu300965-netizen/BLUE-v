@@ -234,6 +234,20 @@ function renderMessages() {
       }
       const link = document.createElement('a'); link.href = `${url}?download=1`; link.textContent = `下载 ${item.name}`; link.className = 'message-download'; bubble.append(link);
     }
+    if (message.text === '[非文本消息]' && !message.revoked) {
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'outline reread-message'; retry.textContent = '重新读取文字';
+      retry.onclick = async () => {
+        const epoch = authEpoch, account = selectedAccount;
+        retry.disabled = true; retry.textContent = '正在重新读取…';
+        try {
+          const result = await api(`/api/accounts/${account}/messages/${encodeURIComponent(message.id)}/refresh`, { method: 'POST' });
+          if (epoch !== authEpoch || account !== selectedAccount) return;
+          messages = messages.map(item => item.id === message.id ? result.message : item); renderMessages();
+          if (!result.recovered) notice(`WhatsApp 仍未提供正文，消息类型：${result.message.messageType || '未知'}。请确认手机端内容已加载。`);
+        } catch (error) { if (epoch === authEpoch && account === selectedAccount) { retry.disabled = false; retry.textContent = '重新读取文字'; notice(error.message); } }
+      };
+      bubble.append(retry);
+    }
     if (message.media && !message.attachment) {
       const load = document.createElement('button'); load.type = 'button'; load.className = 'outline load-message-media';
       load.textContent = message.media.type === 'image' ? '加载原图' : message.media.type === 'ptt' || message.media.type === 'audio' ? '加载语音/音频' : message.media.type === 'video' ? '加载视频' : '加载文件';

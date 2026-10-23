@@ -310,6 +310,7 @@ accountRouter.post('/messages/:messageId/forward', async (req, res) => {
   res.json(await req.runtime.messageAction(req.params.messageId, 'forward', target));
 });
 accountRouter.post('/messages/:messageId/revoke', async (req, res) => res.json(await req.runtime.messageAction(req.params.messageId, 'revoke')));
+accountRouter.post('/messages/:messageId/refresh', async (req, res) => res.json(await req.runtime.refreshMessage(req.params.messageId)));
 accountRouter.post('/messages/:messageId/media', async (req, res) => res.json({ message: await req.runtime.downloadMessageMedia(req.params.messageId) }));
 const mediaTypes = {
   'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'image/gif': 'image',

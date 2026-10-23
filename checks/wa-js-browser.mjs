@@ -138,7 +138,21 @@ try {
   assert.ok(received.some(e => e.type === 'message' && e.message.id === 'AFTER_REBIND'));
   assert.ok(received.some(e => e.type === 'receiver_error' && e.code === 'RECEIVER_BINDING'));
   assert.ok(received.some(e => e.type === 'receiver_heartbeat'));
+  await page.evaluate(() => {
+    window.WPP.chat.getMessageById = async () => ({ id: { id: 'EMPTY_TEXT', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', attributes: { body: 'Recovered model attributes' }, t: Math.floor(Date.now() / 1000) });
+    window.reboundHandlers['chat.new_message']({ id: { id: 'EMPTY_TEXT', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', t: Math.floor(Date.now() / 1000) });
+  });
+  for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'EMPTY_TEXT'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(received.find(e => e.type === 'message' && e.message.id === 'EMPTY_TEXT')?.message.body, 'Recovered model attributes');
   const client = new WaJsClient({ profileDir: '/unused', onEvent(event) { received.push(event); } }); client.page = page;
+  const reread = await client.readMessage('false_123456789@c.us_EMPTY_TEXT', '123456789@s.whatsapp.net');
+  assert.equal(reread.body, 'Recovered model attributes'); assert.equal(reread.history, true);
+  await page.evaluate(() => {
+    window.WPP.chat.list = async () => [{ id: '123456789@c.us', name: 'Customer' }];
+    window.WPP.chat.getMessages = async () => [{ id: { id: 'EMPTY_TEXT', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', t: Math.floor(Date.now() / 1000) }];
+  });
+  const synced = await client.fetchMessages(); assert.equal(synced.messages[0].body, 'Recovered model attributes'); assert.equal(synced.messages[0].history, true);
+
   await page.evaluate(() => { window.WPP.contact = { getPnLidEntry: async to => ({ phoneNumber: { _serialized: '447700900123@c.us' }, contact: { pushname: 'Rose', name: 'Saved name' } }) }; });
   assert.deepEqual(await client.contactInfo('999999999999999@lid'), { name: 'Rose', phoneNumber: '447700900123' });
   await page.evaluate(() => { window.WPP.contact.getPnLidEntry = async () => { throw new Error('Unavailable'); }; });

@@ -246,3 +246,26 @@ test('message receipts survive early send races, history refresh and account iso
     store.revokeMessage(a.id, 'OUT'); assert.equal(store.updateReceipt(a.id, 'OUT', jid, 4), false);
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true }); }
 });
+
+test('single-message text repair validates stored ownership, connection generation and never triggers automation', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-reread-')); const store = new Store(dir);
+  let rt;
+  try {
+    await store.bootstrap('reread-admin', '123456'); const owner = store.byName('reread-admin');
+    const account = store.createAccount(owner.id, 'One');
+    rt = await new WhatsAppAccount(account, store, dir).init();
+    const jid = '123456789@s.whatsapp.net', raw = { id: 'TEXT', chatId: '123456789@c.us', type: 'chat', body: '真实文字', timestamp: Date.now() / 1000 };
+    store.remember(account.id, { id: 'TEXT', jid, text: '[非文本消息]', time: Date.now(), outgoing: false });
+    rt.state.status = 'connected'; rt.state.user = { id: '987654321@s.whatsapp.net' };
+    let sends = 0; rt.automation.handle = () => { sends++; };
+    rt.client = { close: async () => {}, readMessage: async (source, chat) => { assert.equal(source, 'false_123456789@c.us_TEXT'); assert.equal(chat, jid); return raw; } };
+    const result = await rt.refreshMessage('TEXT'); assert.equal(result.recovered, true); assert.equal(result.message.text, '真实文字'); assert.equal(sends, 0);
+    await assert.rejects(rt.refreshMessage('FOREIGN'), /消息不存在/);
+    rt.client.readMessage = async () => ({ ...raw, chatId: '999999999@c.us' });
+    await assert.rejects(rt.refreshMessage('TEXT'), /不匹配/);
+    rt.client.readMessage = async () => { rt.generation++; return raw; };
+    await assert.rejects(rt.refreshMessage('TEXT'), /连接已变更/);
+    rt.client.readMessage = async () => { throw Error('private error'); };
+    await assert.rejects(rt.refreshMessage('TEXT'), /暂未提供/);
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});

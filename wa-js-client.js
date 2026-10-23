@@ -22,7 +22,12 @@ export function installWaBridge() {
   };
   window.__blueSerializeWaMessage = (msg, history = false, fallbackChat = '', fallbackName = '') => {
     // Optional model getters can throw before WhatsApp finishes loading modules.
-    const safe = new Proxy(msg, { get(target, key) { try { return target[key]; } catch { return undefined; } } });
+    const safe = new Proxy(msg, { get(target, key) {
+      try { const value = target[key]; if (value !== undefined && value !== null && value !== '') return value; } catch {}
+      // WA-JS ModelProxy getters may be unavailable while modules reload.
+      // Read only the same explicitly selected fields from model attributes.
+      try { return target.attributes?.[key]; } catch { return undefined; }
+    } });
     msg = safe;
     const key = msg.id;
     const serialized = typeof key === 'string' ? key : key?._serialized || '';
@@ -68,14 +73,35 @@ export function installWaBridge() {
     emit({ type: 'receipt', id, jid, ack });
   }
   function receiptHandler(msg) { try { publishReceipt(msg.id, msg.ack); } catch {} }
+  const textReads = new Map(), pendingTextReads = new Set();
+  function recoverText(raw, source) {
+    if (!['chat', 'unknown', undefined].includes(raw.type) || pendingTextReads.size >= 10 || typeof window.WPP?.chat?.getMessageById !== 'function') return;
+    const key = `${raw.chatId}:${raw.id}`, previous = textReads.get(key);
+    if (pendingTextReads.has(key) || previous && (previous.count >= 3 || Date.now() - previous.time < 5000)) return;
+    textReads.set(key, { count: (previous?.count || 0) + 1, time: Date.now() });
+    if (textReads.size > 2000) textReads.delete(textReads.keys().next().value);
+    pendingTextReads.add(key);
+    const sourceId = /^(true|false)_/.test(raw.sourceId || '') ? raw.sourceId : /^(true|false)_/.test(raw.id) ? raw.id : `${Boolean(raw.fromMe)}_${raw.chatId}_${raw.id}`;
+    void (async () => {
+      let timer;
+      try {
+        const model = await Promise.race([window.WPP.chat.getMessageById(sourceId), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('TEXT_READ_TIMEOUT')), 10000); })]);
+        if (!model) return;
+        const recovered = window.__blueSerializeWaMessage(model, false, raw.chatId);
+        if (recovered.id !== raw.id || recovered.chatId !== raw.chatId || recovered.fromMe !== raw.fromMe || !recovered.body && !recovered.caption) return;
+        receiveMessage(model, source);
+      } catch { /* The periodic store sweep retries temporary loader failures. */ }
+      finally { clearTimeout(timer); pendingTextReads.delete(key); }
+    })();
+  }
   function receiveMessage(msg, source = 'event') {
     try {
       if (!window.WPP?.conn.isMainReady()) return;
       const raw = window.__blueSerializeWaMessage(msg);
       if (['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return;
       if (!raw.id || !raw.chatId || !raw.timestamp) return;
-      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !raw.label && !raw.hasMediaAttachment && !raw.mime && !['poll_creation', 'poll_update', 'multi_vcard', 'live_location', 'reaction', 'revoked', 'call_log', 'album', 'interactive', 'list', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) return;
       if (source !== 'event' && raw.timestamp < liveSince - 2) return;
+      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !raw.label && !raw.hasMediaAttachment && !raw.mime && !['poll_creation', 'poll_update', 'multi_vcard', 'live_location', 'reaction', 'revoked', 'call_log', 'album', 'interactive', 'list', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) { recoverText(raw, source); return; }
       const key = `${raw.chatId}:${typeof raw.id === 'string' ? raw.id : ''}`;
       // A MsgModel can arrive before its body/caption/type finishes loading.
       // Suppress identical snapshots, but publish later content enrichment.
@@ -288,8 +314,35 @@ export class WaJsClient {
           }
         } catch { failedChats++; }
       }
+      // List results can contain a partial plain-text snapshot. Resolve a bounded
+      // batch from the canonical message models before persisting placeholders.
+      const incomplete = messages.map((message, index) => ({ message, index })).filter(({ message }) => !message.body && !message.caption && ['chat', 'unknown', undefined].includes(message.type)).slice(0, 10);
+      await Promise.all(incomplete.map(async ({ message, index }) => {
+        let timer;
+        const sourceId = /^(true|false)_/.test(message.sourceId || '') ? message.sourceId : /^(true|false)_/.test(message.id) ? message.id : `${Boolean(message.fromMe)}_${message.chatId}_${message.id}`;
+        try {
+          const model = await Promise.race([window.WPP.chat.getMessageById(sourceId), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('TEXT_READ_TIMEOUT')), 10000); })]);
+          if (!model) return;
+          const recovered = window.__blueSerializeWaMessage(model, true, message.chatId, message.name);
+          if (recovered.id === message.id && recovered.chatId === message.chatId && recovered.fromMe === message.fromMe && (recovered.body || recovered.caption)) messages[index] = recovered;
+        } catch { /* Preserve the original snapshot for an explicit single-message retry. */ }
+        finally { clearTimeout(timer); }
+      }));
       return { messages, chatCount: chats.length, failedChats };
     });
+  }
+  async readMessage(sourceId, jid) {
+    return this.page.evaluate(async ({ sourceId, chatId }) => {
+      let timer;
+      try {
+        const model = await Promise.race([
+          window.WPP.chat.getMessageById(sourceId),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('MESSAGE_READ_TIMEOUT')), 10000); })
+        ]);
+        if (!model) throw new Error('MESSAGE_NOT_AVAILABLE');
+        return window.__blueSerializeWaMessage(model, true, chatId);
+      } finally { clearTimeout(timer); }
+    }, { sourceId, chatId: toWaJid(jid) });
   }
   async downloadMessageMedia(sourceId) {
     return this.page.evaluate(async id => {
