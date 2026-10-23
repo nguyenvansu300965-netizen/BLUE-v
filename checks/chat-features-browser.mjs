@@ -73,7 +73,7 @@ try {
   assert.ok(geometry.content > geometry.height); assert.ok(geometry.page <= geometry.view + 1);
   assert.equal(await page.$eval('.rail', el => el.getBoundingClientRect().top), before);
   await page.click('#receiver-diagnostics');
-  await page.waitForFunction(() => document.getElementById('receiver-diagnostics-text').value.includes('"schema": 1'));
+  await page.waitForFunction(() => document.getElementById('receiver-diagnostics-text').value.includes('"schema": 2'));
   const report = JSON.parse(await page.$eval('#receiver-diagnostics-text', el => el.value));
   assert.ok(!('messages' in report));
   await page.evaluate(() => { window.dispatchEvent(new Event('account-changed')); });

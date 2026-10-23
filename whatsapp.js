@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeWaMessage, toStoredJid, toWaJid, stanzaId, receiptAck, mergeReceipt } from './messages.js';
+import { normalizeWaMessage, messageRejection, messageEnvelope, toStoredJid, toWaJid, stanzaId, receiptAck, mergeReceipt } from './messages.js';
 import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
@@ -110,7 +110,14 @@ export class WhatsAppAccount {
     } else if (event.type === 'message') {
       this.receiver.received++; this.receiver.lastEventAt = Date.now();
       const item = normalizeWaMessage(event.message);
-      if (!item || !Number.isFinite(item.time) || item.time <= 0) { this.receiver.rejected++; this.broadcast(); return; }
+      if (!item || !Number.isFinite(item.time) || item.time <= 0) {
+        this.receiver.rejected++;
+        const reason = messageRejection(event.message);
+        this.receiver.rejectionReasons ||= {};
+        this.receiver.rejectionReasons[reason] = (this.receiver.rejectionReasons[reason] || 0) + 1;
+        this.receiver.lastRejection = { reason, ...messageEnvelope(event.message) };
+        this.broadcast(); return;
+      }
       this.receiver.lastMessageAt = Date.now();
       const { selection, quotedId, history, ...message } = item;
       this.remember(message);
@@ -232,7 +239,7 @@ export class WhatsAppAccount {
     try { if (this.client?.diagnostics) engine = await Promise.race([this.client.diagnostics(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('DIAGNOSTICS_TIMEOUT')), 5000); })]); }
     catch { engine = { unavailable: 'BROWSER_UNRESPONSIVE' }; }
     finally { clearTimeout(timer); }
-    return { schema: 1, collectedAt: Date.now(), connection: this.state.status, receiver: this.receiver, sync: this.sync, engine };
+    return { schema: 2, collectedAt: Date.now(), connection: this.state.status, receiver: this.receiver, sync: this.sync, engine };
   }
   async refreshMessage(id) {
     this.requireConnected();

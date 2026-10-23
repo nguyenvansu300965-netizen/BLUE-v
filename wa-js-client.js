@@ -14,7 +14,7 @@ export const waScript = require.resolve('@wppconnect/wa-js');
 export function installWaBridge() {
   if (window.__blueWaBridge) return;
   window.__blueWaBridge = true;
-  const stats = window.__blueWaDiagnostics = { schema: 1, startedAt: Date.now(), observed: 0, serialized: 0, emitted: 0, skipped: { system: 0, identity: 0, empty: 0, old: 0, duplicate: 0, errors: 0 }, types: {}, samples: [], textRecovery: { attempted: 0, resolved: 0, failed: 0 } };
+  const stats = window.__blueWaDiagnostics = { schema: 2, byType: {}, lastEmitted: null, startedAt: Date.now(), observed: 0, serialized: 0, emitted: 0, skipped: { system: 0, identity: 0, empty: 0, old: 0, duplicate: 0, errors: 0 }, types: {}, samples: [], textRecovery: { attempted: 0, resolved: 0, failed: 0 } };
   const fieldShape = read => { try { const value = read(); return { kind: value === null ? 'null' : typeof value, ...(typeof value === 'string' ? { length: value.length } : {}) }; } catch { return { kind: 'throws' }; } };
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
   const wid = value => {
@@ -47,6 +47,10 @@ export function installWaBridge() {
     const body = string(msg.body, msg.text, msg.content, msg.pollName, msg.vcardFormattedName);
     const type = typeof msg.type === 'string' && /^[a-z_0-9]{1,60}$/i.test(msg.type) && !['__proto__', 'prototype', 'constructor'].includes(msg.type) ? msg.type : 'unknown';
     if (Object.hasOwn(stats.types, type) || Object.keys(stats.types).length < 40) stats.types[type] = (stats.types[type] || 0) + 1;
+    if (Object.hasOwn(stats.byType, type) || Object.keys(stats.byType).length < 40) {
+      const timestamp = Number(msg.t || 0), age = Number.isFinite(timestamp) ? Math.floor(Date.now() / 1000 - timestamp) : null;
+      stats.byType[type] = { at: Date.now(), history, ageSeconds: Number.isFinite(age) && Math.abs(age) <= 31536000 ? age : null, body: fieldShape(() => original.body), getterBody: fieldShape(() => original.get?.('body')), attributesBody: fieldShape(() => original.attributes?.body), serializedBody: fieldShape(() => body) };
+    }
     if ((!body && !msg.caption) || stats.samples.length < 3) {
       stats.samples.push({ type, source: history ? 'history/read' : 'live/model', body: fieldShape(() => original.body), getterBody: fieldShape(() => original.get?.('body')), attributesBody: fieldShape(() => original.attributes?.body), text: fieldShape(() => original.text), serializedBody: fieldShape(() => body) });
       if (stats.samples.length > 5) stats.samples.shift();
@@ -125,6 +129,7 @@ export function installWaBridge() {
       if (delivered.get(key) === signature) { stats.skipped.duplicate++; return; }
       delivered.set(key, signature);
       if (delivered.size > 2000) delivered.delete(delivered.keys().next().value);
+      stats.lastEmitted = { type: typeof raw.type === 'string' && /^[a-z0-9_]{1,60}$/i.test(raw.type) ? raw.type : 'unknown', idKind: typeof raw.id, chatKind: typeof raw.chatId, server: ['c.us', 's.whatsapp.net', 'lid', 'g.us', 'broadcast', 'newsletter'].includes(raw.chatId?.split('@').at(-1)) ? raw.chatId.split('@').at(-1) : 'other', deviceQualified: /^[0-9]+:[0-9]+@/.test(raw.chatId || ''), timestampKind: typeof raw.timestamp, timestampFinite: Number.isFinite(raw.timestamp) };
       stats.emitted++; emit({ type: 'message', message: raw, source });
     } catch { stats.skipped.errors++; emit({ type: 'receiver_error', code: 'MESSAGE_SERIALIZATION' }); }
   }

@@ -36,6 +36,21 @@ function imagePreview(value) {
   const type = value.startsWith('/9j/') ? 'jpeg' : value.startsWith('iVBOR') ? 'png' : 'webp';
   return `data:image/${type};base64,${value}`;
 }
+export function messageRejection(raw) {
+  if (!raw || typeof raw.chatId !== 'string') return 'INVALID_CHAT_FIELD';
+  if (['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return 'SYSTEM_OR_ENCRYPTED';
+  if (!stanzaId(raw.id)) return 'INVALID_MESSAGE_ID';
+  if (!/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(toStoredJid(raw.chatId))) return 'UNSUPPORTED_CHAT_FORMAT';
+  const time = Number(raw.timestamp || 0) * 1000;
+  if (!Number.isFinite(time) || time <= 0) return 'INVALID_TIMESTAMP';
+  return 'NORMALIZATION_FAILED';
+}
+export function messageEnvelope(raw) {
+  const chat = typeof raw?.chatId === 'string' ? raw.chatId : '';
+  const suffix = chat.split('@').at(-1);
+  const server = ['c.us', 's.whatsapp.net', 'lid', 'g.us', 'broadcast', 'newsletter'].includes(suffix) ? suffix : 'other';
+  return { type: typeof raw?.type === 'string' && /^[a-z0-9_]{1,60}$/i.test(raw.type) ? raw.type : 'unknown', idKind: typeof raw?.id, chatKind: typeof raw?.chatId, server, deviceQualified: /^[0-9]+:[0-9]+@/.test(chat), timestampKind: typeof raw?.timestamp, timestampFinite: Number.isFinite(Number(raw?.timestamp)) };
+}
 export function normalizeWaMessage(raw) {
   if (!raw || typeof raw.chatId !== 'string' || ['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return null;
   const id = stanzaId(raw.id), jid = toStoredJid(raw.chatId);

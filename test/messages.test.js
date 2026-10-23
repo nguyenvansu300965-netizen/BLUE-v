@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recipientJid, normalizeWaMessage, stanzaId, toWaJid } from '../messages.js';
+import { recipientJid, messageRejection, messageEnvelope, normalizeWaMessage, stanzaId, toWaJid } from '../messages.js';
 test('normalizes international numbers and rejects invalid destinations', () => {
   assert.equal(recipientJid('+86 138-0013-8000'), '8613800138000@s.whatsapp.net');
   for (const input of ['', '123', 'abc', '0123456789', '1234567890123456', '1234567@g.us']) assert.throws(() => recipientJid(input));
@@ -48,4 +48,17 @@ test('interactive media and special message types retain readable identities', (
   }
   const choice = normalizeWaMessage({ ...raw, type: 'interactive_response', nativeFlowParams: '{"id":"flow:start:0","display_text":"English"}' });
   assert.equal(choice.selection, 'flow:start:0'); assert.equal(choice.text, 'English');
+});
+
+
+test('receiver rejection diagnostics distinguish envelope failures without exposing addresses or message content', () => {
+  const raw = { id: 'PRIVATE-ID', chatId: '123456789@c.us', type: 'chat', body: 'secret body', timestamp: 123 };
+  assert.equal(messageRejection({ ...raw, chatId: null }), 'INVALID_CHAT_FIELD');
+  assert.equal(messageRejection({ ...raw, type: 'ciphertext' }), 'SYSTEM_OR_ENCRYPTED');
+  assert.equal(messageRejection({ ...raw, id: null }), 'INVALID_MESSAGE_ID');
+  assert.equal(messageRejection({ ...raw, chatId: '123456789:4@c.us' }), 'UNSUPPORTED_CHAT_FORMAT');
+  assert.equal(messageRejection({ ...raw, timestamp: 'invalid' }), 'INVALID_TIMESTAMP');
+  const report = messageEnvelope({ ...raw, chatId: '123456789:4@c.us' });
+  assert.equal(report.deviceQualified, true); assert.equal(report.server, 'c.us');
+  assert.doesNotMatch(JSON.stringify(report), /PRIVATE-ID|123456789|secret body/);
 });

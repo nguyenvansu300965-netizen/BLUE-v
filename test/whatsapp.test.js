@@ -269,3 +269,17 @@ test('single-message text repair validates stored ownership, connection generati
     await assert.rejects(rt.refreshMessage('TEXT'), /暂未提供/);
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test('rejected live messages retain actionable per-reason counters and sanitized envelope shapes', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-reject-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('reject-admin', '123456'); rt = await new WhatsAppAccount(store.createAccount(store.byName('reject-admin').id, 'One'), store, dir).init();
+    const raw = { id: 'SECRET-ID', chatId: '123456789:4@c.us', type: 'chat', body: 'private text', timestamp: Date.now() / 1000 };
+    await rt.onClientEvent({ type: 'message', message: raw }, rt.generation);
+    await rt.onClientEvent({ type: 'message', message: { ...raw, chatId: '123456789@c.us', timestamp: 0 } }, rt.generation);
+    assert.equal(rt.receiver.rejectionReasons.UNSUPPORTED_CHAT_FORMAT, 1); assert.equal(rt.receiver.rejectionReasons.INVALID_TIMESTAMP, 1);
+    assert.equal(rt.receiver.lastRejection.reason, 'INVALID_TIMESTAMP'); assert.equal(rt.receiver.lastMessageAt, null);
+    assert.doesNotMatch(JSON.stringify(rt.receiver), /SECRET-ID|123456789|private text/);
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});

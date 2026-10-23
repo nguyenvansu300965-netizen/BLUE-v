@@ -151,7 +151,7 @@ try {
   for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'GETTER_BODY'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(received.find(e => e.type === 'message' && e.message.id === 'GETTER_BODY')?.message.body, 'Text from documented Model.get');
   const diagnostic = await client.diagnostics();
-  assert.equal(diagnostic.bridge.schema, 1); assert.ok(diagnostic.bridge.observed > 0); assert.ok(diagnostic.bridge.emitted > 0);
+  assert.equal(diagnostic.bridge.schema, 2); assert.ok(diagnostic.bridge.byType.chat); assert.ok(diagnostic.bridge.lastEmitted); assert.ok(diagnostic.bridge.byType.chat.serializedBody.length > 0); assert.ok(diagnostic.bridge.observed > 0); assert.ok(diagnostic.bridge.emitted > 0);
   assert.doesNotMatch(JSON.stringify(diagnostic), /Recovered model attributes|Customer|123456789|Text from documented Model.get|test-qr-only/);
   assert.ok(diagnostic.bridge.samples.every(sample => typeof sample.body.kind === 'string' && !('value' in sample.body)));
   const reread = await client.readMessage('false_123456789@c.us_EMPTY_TEXT', '123456789@s.whatsapp.net');

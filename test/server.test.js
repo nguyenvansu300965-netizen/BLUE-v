@@ -68,7 +68,7 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await bob.request(`${base}/state`)).status, 404);
     assert.equal((await bob.request(`${base}/diagnostics`)).status, 404);
     const diagnostic = await (await alice.request(`${base}/diagnostics`)).json();
-    assert.equal(diagnostic.schema, 1); assert.equal(diagnostic.connection, 'idle');
+    assert.equal(diagnostic.schema, 2); assert.equal(diagnostic.connection, 'idle');
     assert.equal(diagnostic.engine, null); assert.ok(!('messages' in diagnostic) && !('user' in diagnostic) && !('qr' in diagnostic));
 
     assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
