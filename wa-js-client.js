@@ -14,6 +14,8 @@ export const waScript = require.resolve('@wppconnect/wa-js');
 export function installWaBridge() {
   if (window.__blueWaBridge) return;
   window.__blueWaBridge = true;
+  const stats = window.__blueWaDiagnostics = { schema: 1, startedAt: Date.now(), observed: 0, serialized: 0, emitted: 0, skipped: { system: 0, identity: 0, empty: 0, old: 0, duplicate: 0, errors: 0 }, types: {}, samples: [], textRecovery: { attempted: 0, resolved: 0, failed: 0 } };
+  const fieldShape = read => { try { const value = read(); return { kind: value === null ? 'null' : typeof value, ...(typeof value === 'string' ? { length: value.length } : {}) }; } catch { return { kind: 'throws' }; } };
   const emit = event => { void window.__blueWaEvent(event).catch(() => {}); };
   const wid = value => {
     if (!value) return '';
@@ -22,8 +24,10 @@ export function installWaBridge() {
   };
   window.__blueSerializeWaMessage = (msg, history = false, fallbackChat = '', fallbackName = '') => {
     // Optional model getters can throw before WhatsApp finishes loading modules.
+    const original = msg;
     const safe = new Proxy(msg, { get(target, key) {
       try { const value = target[key]; if (value !== undefined && value !== null && value !== '') return value; } catch {}
+      try { const value = typeof target.get === 'function' ? target.get(key) : undefined; if (value !== undefined && value !== null && value !== '') return value; } catch {}
       // WA-JS ModelProxy getters may be unavailable while modules reload.
       // Read only the same explicitly selected fields from model attributes.
       try { return target.attributes?.[key]; } catch { return undefined; }
@@ -39,11 +43,19 @@ export function installWaBridge() {
       try { const params = JSON.parse(button.buttonParamsJson || '{}'); if (typeof params.display_text === 'string') buttons.push({ label: params.display_text }); } catch {}
     }
 
+    stats.serialized++;
+    const body = string(msg.body, msg.text, msg.content, msg.pollName, msg.vcardFormattedName);
+    const type = typeof msg.type === 'string' && /^[a-z_0-9]{1,60}$/i.test(msg.type) && !['__proto__', 'prototype', 'constructor'].includes(msg.type) ? msg.type : 'unknown';
+    if (Object.hasOwn(stats.types, type) || Object.keys(stats.types).length < 40) stats.types[type] = (stats.types[type] || 0) + 1;
+    if ((!body && !msg.caption) || stats.samples.length < 3) {
+      stats.samples.push({ type, source: history ? 'history/read' : 'live/model', body: fieldShape(() => original.body), getterBody: fieldShape(() => original.get?.('body')), attributesBody: fieldShape(() => original.attributes?.body), text: fieldShape(() => original.text), serializedBody: fieldShape(() => body) });
+      if (stats.samples.length > 5) stats.samples.shift();
+    }
     return {
       id: typeof key === 'string' ? key : key?.id || key?._serialized,
       chatId: wid(key?.remote) || fallbackChat || serialized.split('_')[1] || wid(fromMe ? msg.to : msg.from), fromMe, sourceId: serialized, ack: Number.isInteger(msg.ack) ? msg.ack : undefined,
       mime: typeof msg.mimetype === 'string' ? msg.mimetype : '', filename: typeof msg.filename === 'string' ? msg.filename : '', size: Number(msg.size || 0),
-      body: string(msg.body, msg.text, msg.content, msg.pollName, msg.vcardFormattedName), caption: string(msg.caption),
+      body, caption: string(msg.caption),
       buttons, hasMediaAttachment: Boolean(msg.interactiveHeader?.hasMediaAttachment || msg.interactiveHeader?.hasmediaAttachment), mediaType: msg.interactiveHeader?.mediaType, thumbnail: typeof msg.thumbnail === 'string' ? msg.thumbnail : typeof msg.interactiveHeader?.thumbnail === 'string' ? msg.interactiveHeader.thumbnail : undefined,
       name: fallbackName || (typeof msg.notifyName === 'string' ? msg.notifyName : ''), timestamp: Number(msg.t || 0), type: msg.type,
       history: history || Boolean(msg.isMdHistoryMsg), selectedButtonId: msg.selectedButtonId || msg.buttonsResponse?.selectedButtonId,
@@ -80,7 +92,7 @@ export function installWaBridge() {
     if (pendingTextReads.has(key) || previous && (previous.count >= 3 || Date.now() - previous.time < 5000)) return;
     textReads.set(key, { count: (previous?.count || 0) + 1, time: Date.now() });
     if (textReads.size > 2000) textReads.delete(textReads.keys().next().value);
-    pendingTextReads.add(key);
+    pendingTextReads.add(key); stats.textRecovery.attempted++;
     const sourceId = /^(true|false)_/.test(raw.sourceId || '') ? raw.sourceId : /^(true|false)_/.test(raw.id) ? raw.id : `${Boolean(raw.fromMe)}_${raw.chatId}_${raw.id}`;
     void (async () => {
       let timer;
@@ -89,8 +101,8 @@ export function installWaBridge() {
         if (!model) return;
         const recovered = window.__blueSerializeWaMessage(model, false, raw.chatId);
         if (recovered.id !== raw.id || recovered.chatId !== raw.chatId || recovered.fromMe !== raw.fromMe || !recovered.body && !recovered.caption) return;
-        receiveMessage(model, source);
-      } catch { /* The periodic store sweep retries temporary loader failures. */ }
+        stats.textRecovery.resolved++; receiveMessage(model, source);
+      } catch { stats.textRecovery.failed++; /* The periodic store sweep retries temporary loader failures. */ }
       finally { clearTimeout(timer); pendingTextReads.delete(key); }
     })();
   }
@@ -98,10 +110,11 @@ export function installWaBridge() {
     try {
       if (!window.WPP?.conn.isMainReady()) return;
       const raw = window.__blueSerializeWaMessage(msg);
-      if (['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) return;
-      if (!raw.id || !raw.chatId || !raw.timestamp) return;
-      if (source !== 'event' && raw.timestamp < liveSince - 2) return;
-      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !raw.label && !raw.hasMediaAttachment && !raw.mime && !['poll_creation', 'poll_update', 'multi_vcard', 'live_location', 'reaction', 'revoked', 'call_log', 'album', 'interactive', 'list', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) { recoverText(raw, source); return; }
+      stats.observed++;
+      if (['ciphertext', 'protocol', 'notification', 'e2e_notification', 'gp2'].includes(raw.type)) { stats.skipped.system++; return; }
+      if (!raw.id || !raw.chatId || !raw.timestamp) { stats.skipped.identity++; return; }
+      if (source !== 'event' && raw.timestamp < liveSince - 2) { stats.skipped.old++; return; }
+      if (!raw.body && !raw.caption && !raw.selectedButtonId && !raw.selectedId && !raw.nativeFlowParams && !raw.label && !raw.hasMediaAttachment && !raw.mime && !['poll_creation', 'poll_update', 'multi_vcard', 'live_location', 'reaction', 'revoked', 'call_log', 'album', 'interactive', 'list', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard'].includes(raw.type)) { stats.skipped.empty++; recoverText(raw, source); return; }
       const key = `${raw.chatId}:${typeof raw.id === 'string' ? raw.id : ''}`;
       // A MsgModel can arrive before its body/caption/type finishes loading.
       // Suppress identical snapshots, but publish later content enrichment.
@@ -109,11 +122,11 @@ export function installWaBridge() {
       let hash = 2166136261;
       for (let i = 0; i < content.length; i++) hash = Math.imul(hash ^ content.charCodeAt(i), 16777619);
       const signature = `${content.length}:${hash >>> 0}`;
-      if (delivered.get(key) === signature) return;
+      if (delivered.get(key) === signature) { stats.skipped.duplicate++; return; }
       delivered.set(key, signature);
       if (delivered.size > 2000) delivered.delete(delivered.keys().next().value);
-      emit({ type: 'message', message: raw, source });
-    } catch { emit({ type: 'receiver_error', code: 'MESSAGE_SERIALIZATION' }); }
+      stats.emitted++; emit({ type: 'message', message: raw, source });
+    } catch { stats.skipped.errors++; emit({ type: 'receiver_error', code: 'MESSAGE_SERIALIZATION' }); }
   }
   function watchMessageStore(wpp) {
     try {
@@ -329,6 +342,13 @@ export class WaJsClient {
         finally { clearTimeout(timer); }
       }));
       return { messages, chatCount: chats.length, failedChats };
+    });
+  }
+  async diagnostics() {
+    return this.page.evaluate(() => {
+      const version = value => typeof value === 'string' && /^[a-z0-9.+_-]{1,60}$/i.test(value) ? value : null;
+      const ready = name => { try { return Boolean(window.WPP?.conn?.[name]?.()); } catch { return null; } };
+      return { waJsVersion: version(window.WPP?.version), waWebVersion: version(window.Debug?.VERSION), mainReady: ready('isMainReady'), online: ready('isOnline'), bridgeInstalled: Boolean(window.__blueWaBridge), storeAvailable: Boolean(window.WPP?.whatsapp?.MsgStore), bridge: window.__blueWaDiagnostics || null };
     });
   }
   async readMessage(sourceId, jid) {

@@ -124,9 +124,9 @@ function renderState(state) {
   connected = state.status === 'connected'; messages = state.messages;
   if (liveArrival && newMessages.some(m => !(m.jid === selectedThread && viewingChat()))) playNotification();
   markCurrentRead();
-  $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '实时接收已就绪') : '消息接收初始化中…');
+  $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '接收监听已绑定，尚未验证收信') : '消息接收初始化中…');
   $('receiver-status').title = state.receiver ? `收到事件 ${state.receiver.received}，未解析 ${state.receiver.rejected}` : '';
-  $('sync-status').textContent = state.sync?.status === 'syncing' ? '正在导入最近会话…' : state.sync?.error || (state.sync?.updatedAt ? `最近同步新增 ${state.sync.imported} 条` : '');
+  $('sync-status').textContent = state.sync?.status === 'syncing' ? '正在导入最近会话…' : state.sync?.error || (state.sync?.updatedAt ? `读取 ${state.sync.read ?? '—'} 条，新增/更新 ${state.sync.imported} 条${state.sync.missingText ? `，正文缺失 ${state.sync.missingText} 条` : ''}` : '');
   $('sync-messages').disabled = !connected || state.sync?.status === 'syncing';
   $('sync-messages').textContent = state.sync?.status === 'syncing' ? '同步中…' : '同步消息';
   $('sync-messages').title = state.sync?.error || (state.sync?.updatedAt ? `最近同步 ${new Date(state.sync.updatedAt).toLocaleString()}` : '读取当前号码在 WhatsApp Web 中可用的最近消息');
@@ -835,4 +835,25 @@ $('quick-load').onclick = () => {
     $('attachment-draft').textContent = (file || quickMedia).name; $('attachment-draft').hidden = false; $('clear-attachment').hidden = false;
   }
   closeQuickReplies(); $('text').focus(); notice('已载入快捷回复，请确认后点击发送');
+};
+
+
+let diagnosticRequest = 0;
+function closeReceiverDiagnostics() { diagnosticRequest++; $('receiver-diagnostics-dialog').close(); $('receiver-diagnostics-text').value = ''; }
+$('receiver-diagnostics-close').onclick = closeReceiverDiagnostics;
+$('receiver-diagnostics-dialog').addEventListener('cancel', event => { event.preventDefault(); closeReceiverDiagnostics(); });
+window.addEventListener('account-changed', closeReceiverDiagnostics);
+$('receiver-diagnostics').onclick = async () => {
+  if (!selectedAccount) return notice('请先选择号码');
+  const request = ++diagnosticRequest, epoch = authEpoch, account = selectedAccount;
+  $('receiver-diagnostics-text').value = '正在读取…'; $('receiver-diagnostics-dialog').showModal();
+  try {
+    const result = await api(`/api/accounts/${account}/diagnostics`);
+    if (request !== diagnosticRequest || epoch !== authEpoch || account !== selectedAccount) return;
+    $('receiver-diagnostics-text').value = JSON.stringify(result, null, 2);
+  } catch (error) { if (request === diagnosticRequest && epoch === authEpoch && account === selectedAccount) $('receiver-diagnostics-text').value = error.message; }
+};
+$('receiver-diagnostics-copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('receiver-diagnostics-text').value); notice('诊断已复制'); }
+  catch { $('receiver-diagnostics-text').focus(); $('receiver-diagnostics-text').select(); notice('请手动复制已选中的诊断内容'); }
 };

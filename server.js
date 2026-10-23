@@ -260,6 +260,7 @@ accountRouter.delete('/', async (req, res) => {
   reconcile(); res.json({ ok: true });
 });
 accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
+accountRouter.get('/diagnostics', async (req, res) => res.json(await req.runtime.diagnostics()));
 accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot(req.user.role)));
 accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });

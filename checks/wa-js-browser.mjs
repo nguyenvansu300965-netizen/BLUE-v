@@ -145,6 +145,15 @@ try {
   for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'EMPTY_TEXT'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(received.find(e => e.type === 'message' && e.message.id === 'EMPTY_TEXT')?.message.body, 'Recovered model attributes');
   const client = new WaJsClient({ profileDir: '/unused', onEvent(event) { received.push(event); } }); client.page = page;
+  await page.evaluate(() => {
+    window.reboundHandlers['chat.new_message']({ id: { id: 'GETTER_BODY', remote: { _serialized: '123456789@c.us' }, fromMe: false }, type: 'chat', get: key => key === 'body' ? 'Text from documented Model.get' : undefined, t: Math.floor(Date.now() / 1000) });
+  });
+  for (let i = 0; i < 20 && !received.some(e => e.type === 'message' && e.message.id === 'GETTER_BODY'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(received.find(e => e.type === 'message' && e.message.id === 'GETTER_BODY')?.message.body, 'Text from documented Model.get');
+  const diagnostic = await client.diagnostics();
+  assert.equal(diagnostic.bridge.schema, 1); assert.ok(diagnostic.bridge.observed > 0); assert.ok(diagnostic.bridge.emitted > 0);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /Recovered model attributes|Customer|123456789|Text from documented Model.get|test-qr-only/);
+  assert.ok(diagnostic.bridge.samples.every(sample => typeof sample.body.kind === 'string' && !('value' in sample.body)));
   const reread = await client.readMessage('false_123456789@c.us_EMPTY_TEXT', '123456789@s.whatsapp.net');
   assert.equal(reread.body, 'Recovered model attributes'); assert.equal(reread.history, true);
   await page.evaluate(() => {

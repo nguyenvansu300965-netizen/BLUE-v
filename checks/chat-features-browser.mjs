@@ -72,6 +72,13 @@ try {
   const geometry = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, view: innerHeight, content: document.getElementById('messages').scrollHeight, height: document.getElementById('messages').clientHeight }));
   assert.ok(geometry.content > geometry.height); assert.ok(geometry.page <= geometry.view + 1);
   assert.equal(await page.$eval('.rail', el => el.getBoundingClientRect().top), before);
+  await page.click('#receiver-diagnostics');
+  await page.waitForFunction(() => document.getElementById('receiver-diagnostics-text').value.includes('"schema": 1'));
+  const report = JSON.parse(await page.$eval('#receiver-diagnostics-text', el => el.value));
+  assert.ok(!('messages' in report));
+  await page.evaluate(() => { window.dispatchEvent(new Event('account-changed')); });
+  assert.equal(await page.$eval('#receiver-diagnostics-dialog', el => el.open), false);
+  assert.equal(await page.$eval('#receiver-diagnostics-text', el => el.value), '');
   await page.setRequestInterception(true);
   page.on('request', request => {
     if (request.url().endsWith('/messages/PLAIN_RETRY/refresh')) {

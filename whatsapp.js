@@ -203,7 +203,7 @@ export class WhatsAppAccount {
           if (this.store.remember(this.account.id, message)) imported++;
           this.resolveContact(item.jid);
         }
-        this.sync = { status: 'done', imported, chatCount: result.chatCount, failedChats: result.failedChats, updatedAt: Date.now(), error: result.failedChats ? '部分会话暂未读取成功，可稍后再次同步' : null };
+        this.sync = { status: 'done', imported, read: result.messages.length, missingText: result.messages.filter(raw => !raw.body && !raw.caption && ['chat', 'unknown', undefined].includes(raw.type)).length, chatCount: result.chatCount, failedChats: result.failedChats, updatedAt: Date.now(), error: result.failedChats ? '部分会话暂未读取成功，可稍后再次同步' : null };
         this.broadcast();
         if ((!result.messages.length || result.failedChats) && this.syncRetries++ < 3) this.syncTimer = setTimeout(() => { void this.syncMessages().catch(() => {}); }, 15000);
       } catch {
@@ -226,6 +226,13 @@ export class WhatsAppAccount {
       const phone = /^[1-9]\d{6,14}$/.test(info?.phoneNumber || '') ? info.phoneNumber : '';
       if (name || phone) { this.store.updateContact(this.account.id, jid, { name, phone }); this.broadcast(); }
     }).catch(() => {});
+  }
+  async diagnostics() {
+    let engine = null, timer;
+    try { if (this.client?.diagnostics) engine = await Promise.race([this.client.diagnostics(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('DIAGNOSTICS_TIMEOUT')), 5000); })]); }
+    catch { engine = { unavailable: 'BROWSER_UNRESPONSIVE' }; }
+    finally { clearTimeout(timer); }
+    return { schema: 1, collectedAt: Date.now(), connection: this.state.status, receiver: this.receiver, sync: this.sync, engine };
   }
   async refreshMessage(id) {
     this.requireConnected();
