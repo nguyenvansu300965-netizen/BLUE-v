@@ -41,6 +41,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS messages (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(account_id,id));
       CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS quick_replies (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, title TEXT NOT NULL, text TEXT NOT NULL, attachment_id TEXT);
+      CREATE TABLE IF NOT EXISTS quick_reply_assets (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS user_quick_replies (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, text TEXT NOT NULL, attachment_id TEXT REFERENCES quick_reply_assets(id));
+      CREATE TABLE IF NOT EXISTS quick_reply_copies (asset_id TEXT NOT NULL REFERENCES quick_reply_assets(id) ON DELETE CASCADE, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE, PRIMARY KEY(asset_id,account_id));
       CREATE TABLE IF NOT EXISTS flow_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS contacts (account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, jid TEXT NOT NULL, remark TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', read_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account_id,jid));
       CREATE TABLE IF NOT EXISTS activation_batches (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, fingerprint TEXT NOT NULL, code_count INTEGER NOT NULL);
@@ -118,6 +121,29 @@ export class Store {
       this.db.prepare('INSERT INTO audit(actor,target,action,detail,created_at) VALUES(?,?,?,?,?)').run(actor, id, reset ? 'password_reset' : 'password_change', '{}', Date.now());
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  quickReplyAsset(user, id) {
+    const item = typeof id === 'string' ? this.db.prepare('SELECT id,name,mime,type,size FROM quick_reply_assets WHERE user_id=? AND id=?').get(user, id) : null;
+    return item ? { ...item, scope: 'quick-reply' } : null;
+  }
+  addQuickReplyAsset(user, item) { this.db.prepare('INSERT INTO quick_reply_assets VALUES(?,?,?,?,?,?)').run(item.id, user, item.name, item.mime, item.type, item.size); }
+  userQuickReplies(user) {
+    return this.db.prepare('SELECT id,title,text,attachment_id FROM user_quick_replies WHERE user_id=? ORDER BY rowid').all(user).map(row => ({ id: row.id, title: row.title, text: row.text, attachment: this.quickReplyAsset(user, row.attachment_id) }));
+  }
+  saveUserQuickReply(user, id, input) {
+    if (!input || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 80 || typeof input.text !== 'string' || input.text.length > 4096) fail(400, '标题需要 1–80 字，文本最多 4096 字');
+    const attachment = input.attachment || null;
+    if (attachment && !this.quickReplyAsset(user, attachment)) fail(400, '附件不存在或不属于当前用户');
+    if (!input.text.trim() && !attachment) fail(400, '请填写文本或选择媒体');
+    if (id && !this.userQuickReplies(user).some(item => item.id === id)) fail(404, '快捷回复不存在');
+    if (!id && this.userQuickReplies(user).length >= 1000) fail(400, '每个用户最多保存 1000 条快捷回复');
+    const key = id || randomUUID();
+    if (id) this.db.prepare('UPDATE user_quick_replies SET title=?,text=?,attachment_id=? WHERE user_id=? AND id=?').run(input.title.trim(), input.text, attachment, user, key);
+    else this.db.prepare('INSERT INTO user_quick_replies VALUES(?,?,?,?,?)').run(key, user, input.title.trim(), input.text, attachment);
+    return this.userQuickReplies(user).find(item => item.id === key);
+  }
+  deleteUserQuickReply(user, id) {
+    if (!this.db.prepare('DELETE FROM user_quick_replies WHERE user_id=? AND id=?').run(user, id).changes) fail(404, '快捷回复不存在');
   }
   quickReplies(account) {
     return this.db.prepare('SELECT id,title,text,attachment_id FROM quick_replies WHERE account_id=? ORDER BY rowid').all(account).map(row => ({ id: row.id, title: row.title, text: row.text, attachment: this.attachment(account, row.attachment_id) || null }));

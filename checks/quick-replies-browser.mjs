@@ -29,36 +29,58 @@ try {
   // Use an allowed PNG upload through the same authenticated attachment endpoint.
   const media = await page.evaluate(async id => {
     const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='), c => c.charCodeAt(0));
-    return (await (await fetch(`/api/accounts/${id}/attachments?mime=image/png&name=preview.png`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes })).json()).attachment;
+    return (await (await fetch('/api/quick-reply-assets?mime=image/png&name=preview.png', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes })).json()).attachment;
   }, account.id);
   await page.evaluate(item => { document.getElementById('quick-file').value = ''; quickMedia = item; previewQuickMedia(); }, media);
   await page.click('#quick-save');
   await page.waitForFunction(() => document.getElementById('quick-error').textContent === '已保存');
   assert.equal(await page.$$eval('#quick-preview img', els => els.length), 1);
   const replyId = await page.$eval('#quick-list', el => el.value);
-  assert.equal(store.quickReplies(second.id).length, 0);
-  const foreign = await page.evaluate(async ({ id, media }) => {
-    return (await fetch(`/api/accounts/${id}/quick-replies`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Wrong', text: '', attachment: media.id }) })).status;
-  }, { id: second.id, media });
-  assert.equal(foreign, 400, 'cannot attach another account media');
+  assert.equal(store.userQuickReplies(admin.id).length, 1);
+  const copy = await page.evaluate(async ({ account, media }) => {
+    return (await (await fetch(`/api/accounts/${account}/quick-reply-attachments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachment: media.id }) })).json()).attachment;
+  }, { account: second.id, media });
+  assert.equal(store.attachment(second.id, copy.id).name, media.name);
+  assert.notEqual(copy.id, media.id, 'number-specific outgoing media uses an independent cached attachment');
   const beforeCount = store.messages(account.id).length;
   await page.click('#quick-load');
   assert.equal(await page.$eval('#text', el => el.value), '您好，这是产品说明');
   assert.equal(await page.evaluate(() => attachmentDraft.uploaded.id), media.id);
   assert.equal(store.messages(account.id).length, beforeCount, 'loading never sends');
+  let sendPayload = null;
+  await page.setRequestInterception(true);
+  const interceptSend = request => {
+    if (request.url().endsWith(`/api/accounts/${account.id}/messages`) && request.method() === 'POST') {
+      sendPayload = JSON.parse(request.postData()); void request.respond({ status: 200, contentType: 'application/json', body: '{"ok":true,"id":"TEST-SEND"}' });
+    } else void request.continue();
+  };
+  page.on('request', interceptSend);
+  await page.evaluate(() => { connected = true; document.getElementById('send').disabled = false; document.getElementById('send-form').requestSubmit(); });
+  await page.waitForFunction(() => !sending && attachmentDraft === null);
+  assert.equal(sendPayload.text, '您好，这是产品说明');
+  assert.ok(store.attachment(account.id, sendPayload.attachment), 'send composer prepares shared media for the current number');
+  assert.notEqual(sendPayload.attachment, media.id);
+  await page.setRequestInterception(false); page.off('request', interceptSend);
+
+  await page.select('#account-select', second.id);
+  await page.click('#quick-open'); await page.waitForFunction(() => document.getElementById('quick-list').options.length === 2);
+  await page.select('#quick-list', replyId);
+  assert.equal(await page.$eval('#quick-text', el => el.value), '您好，这是产品说明', 'same saved reply is visible from the second number');
+  assert.equal(await page.$$eval('#quick-preview img', els => els.length), 1);
+  await page.click('#quick-close'); await page.select('#account-select', account.id);
   await page.reload(); await page.waitForSelector('.chat-item'); await page.click('#quick-open');
   await page.waitForFunction(() => document.getElementById('quick-list').options.length === 2);
   await page.select('#quick-list', replyId); await page.type('#quick-text', ' 更新'); await page.click('#quick-save');
   await page.waitForFunction(() => document.getElementById('quick-error').textContent === '已保存');
-  assert.match(store.quickReplies(account.id)[0].text, /更新$/);
+  assert.match(store.userQuickReplies(admin.id)[0].text, /更新$/);
   await page.click('#quick-delete'); await page.waitForFunction(() => document.getElementById('quick-list').options.length === 1);
-  assert.equal(store.quickReplies(account.id).length, 0);
+  assert.equal(store.userQuickReplies(admin.id).length, 0);
   await page.click('#quick-close'); await page.click('#quick-open');
   await page.waitForFunction(() => !document.getElementById('quick-save').disabled);
   await page.evaluate(() => { window.dispatchEvent(new Event('account-changed')); });
   assert.equal(await page.$eval('#quick-dialog', el => el.open), false);
   assert.deepEqual(errors, []);
-  console.log('PASS: quick reply CRUD, persistent media preview, account isolation, explicit composer loading, cleanup on account change.');
+  console.log('PASS: quick reply CRUD, persistent media preview, shared cross-number media, explicit composer loading, cleanup on account change.');
 } finally {
   await browser?.close();
   if (service.exitCode === null) { const exited = once(service, 'exit'); service.kill('SIGTERM'); await exited; }

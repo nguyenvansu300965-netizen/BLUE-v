@@ -105,6 +105,19 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     const asset = (await upload.json()).id;
     assert.equal((await alice.request(`${base}/media/${asset}`)).status, 200);
     assert.equal((await bob.request(`${base}/media/${asset}`)).status, 404);
+    const sharedUpload = await alice.request('/api/quick-reply-assets?mime=image/png&name=shared.png', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: image });
+    assert.equal(sharedUpload.status, 200); const sharedAsset = (await sharedUpload.json()).attachment;
+    assert.equal((await bob.request(`/api/quick-reply-assets/${sharedAsset.id}`)).status, 404);
+    const sharedReply = await (await alice.request('/api/quick-replies', { method: 'POST', body: { title: 'Shared greeting', text: 'Hello', attachment: sharedAsset.id } })).json();
+    assert.equal(sharedReply.reply.attachment.scope, 'quick-reply');
+    assert.deepEqual((await (await bob.request('/api/quick-replies')).json()).replies, []);
+    assert.equal((await bob.request(`/api/quick-replies/${sharedReply.reply.id}`, { method: 'DELETE' })).status, 404);
+    assert.equal((await bob.request('/api/quick-replies', { method: 'POST', body: { title: 'Bad', text: '', attachment: sharedAsset.id } })).status, 400);
+    const prepared = await alice.request(`${base}/quick-reply-attachments`, { method: 'POST', body: { attachment: sharedAsset.id } });
+    assert.equal(prepared.status, 200); const preparedAsset = (await prepared.json()).attachment;
+    assert.equal((await alice.request(`${base}/attachments/${preparedAsset.id}`)).status, 200);
+    assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/quick-reply-attachments`, { method: 'POST', body: { attachment: sharedAsset.id } })).status, 404);
+
     assert.equal((await bob.request(`/api/accounts/${bobAccount.id}/media/${asset}`)).status, 404);
     const flow = { enabled: true, mode: 'numbered', triggerMode: 'keywords', nodes: [{ id: 'hi', name: 'Welcome', text: 'Hello', triggers: ['hi'], image: asset, options: [] }] };
     assert.equal((await alice.request(`${base}/flows`, { method: 'POST', body: flow })).status, 200);

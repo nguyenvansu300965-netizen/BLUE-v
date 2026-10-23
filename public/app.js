@@ -367,6 +367,9 @@ $('send-form').onsubmit = async event => {
       const result = await api(`/api/accounts/${id}/attachments?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: draft.file });
       draft.uploaded = result.attachment;
     }
+    if (draft?.uploaded?.scope === 'quick-reply') {
+      draft.uploaded = (await api(`/api/accounts/${id}/quick-reply-attachments`, { method: 'POST', body: JSON.stringify({ attachment: draft.uploaded.id }) })).attachment;
+    }
     if (epoch !== authEpoch) return;
     await api(`/api/accounts/${id}/messages`, { method: 'POST', body: JSON.stringify({ text, ...(draft ? { attachment: draft.uploaded.id, voice: Boolean(draft.voice) } : {}), ...(existing ? { jid } : { phone }) }) });
     if (epoch === authEpoch && id === selectedAccount && jid === selectedThread) { if ($('text').value === text) $('text').value = ''; if (draft === attachmentDraft) clearAttachment(); }
@@ -768,7 +771,7 @@ function previewQuickMedia() {
   const type = file ? file.type.split('/')[0] : item.type;
   if (['image', 'audio', 'video'].includes(type)) {
     const el = document.createElement(type === 'image' ? 'img' : type);
-    el.src = file ? (quickPreviewUrl = URL.createObjectURL(file)) : `/api/accounts/${quickContext.account}/attachments/${item.id}`;
+    el.src = file ? (quickPreviewUrl = URL.createObjectURL(file)) : `/api/quick-reply-assets/${item.id}`;
     if (type !== 'image') el.controls = true;
     el.style.maxWidth = '100%'; el.style.maxHeight = '220px'; $('quick-preview').append(el);
   }
@@ -784,10 +787,10 @@ function renderQuickList(selected = '') {
   $('quick-list').value = selected; editQuickReply();
 }
 $('quick-open').onclick = async () => {
-  if (!selectedAccount) return notice('请先选择号码');
+  if (!me) return;
   closeQuickReplies(); const ctx = quickContext = { account: selectedAccount, epoch: authEpoch, busy: false };
   $('quick-error').textContent = '正在载入…'; $('quick-save').disabled = true; $('quick-dialog').showModal();
-  try { const result = await api(`/api/accounts/${ctx.account}/quick-replies`); if (!quickCurrent(ctx)) return; quickItems = result.replies; renderQuickList(); }
+  try { const result = await api(`/api/quick-replies`); if (!quickCurrent(ctx)) return; quickItems = result.replies; renderQuickList(); }
   catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
   finally { if (quickCurrent(ctx)) $('quick-save').disabled = false; }
 };
@@ -807,10 +810,10 @@ $('quick-form').onsubmit = async event => {
     if (file) {
       if (!file.size || file.size > 20 * 1048576) throw Error('请选择非空媒体文件，最大 20MB');
       const query = new URLSearchParams({ name: file.name, mime: file.type.split(';')[0] || 'application/octet-stream' });
-      media = (await api(`/api/accounts/${ctx.account}/attachments?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })).attachment;
+      media = (await api(`/api/quick-reply-assets?${query}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })).attachment;
     }
     if (!quickCurrent(ctx)) return;
-    const result = await api(`/api/accounts/${ctx.account}/quick-replies${id ? `/${id}` : ''}`, { method: id ? 'PUT' : 'POST', body: JSON.stringify({ title, text, attachment: media?.id || null }) });
+    const result = await api(`/api/quick-replies${id ? `/${id}` : ''}`, { method: id ? 'PUT' : 'POST', body: JSON.stringify({ title, text, attachment: media?.id || null }) });
     if (!quickCurrent(ctx)) return;
     quickItems = quickItems.filter(item => item.id !== result.reply.id).concat(result.reply); renderQuickList(result.reply.id); $('quick-error').textContent = '已保存';
   } catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
@@ -819,7 +822,7 @@ $('quick-form').onsubmit = async event => {
 $('quick-delete').onclick = async () => {
   const ctx = quickContext, id = $('quick-list').value; if (!ctx || ctx.busy || !id) return;
   ctx.busy = true;
-  try { await api(`/api/accounts/${ctx.account}/quick-replies/${id}`, { method: 'DELETE' }); if (!quickCurrent(ctx)) return; quickItems = quickItems.filter(item => item.id !== id); renderQuickList(); }
+  try { await api(`/api/quick-replies/${id}`, { method: 'DELETE' }); if (!quickCurrent(ctx)) return; quickItems = quickItems.filter(item => item.id !== id); renderQuickList(); }
   catch (error) { if (quickCurrent(ctx)) $('quick-error').textContent = error.message; }
   finally { ctx.busy = false; }
 };

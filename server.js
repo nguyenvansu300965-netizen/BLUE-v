@@ -1,3 +1,4 @@
+import { migrateQuickReplies, quickReplyMediaDir, materializeQuickReplyAsset } from './quick-replies.js';
 import { exportTemplate, importTemplate } from './template-transfer.js';
 import express from 'express';
 import { defaultTemplates } from './flow-templates.js';
@@ -15,6 +16,7 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, '.data'));
 const store = new Store(dataDir);
 for (const file of [path.join(root, 'activation-batches', 'initial.json'), ...(process.env.ACTIVATION_CODE_MANIFEST ? [path.resolve(process.env.ACTIVATION_CODE_MANIFEST)] : [])]) store.importActivationBatch(JSON.parse(await readFile(file, 'utf8')));
 await store.bootstrap(process.env.ADMIN_USER, process.env.ADMIN_PASSWORD);
+await migrateQuickReplies(store, dataDir);
 const publicOrigin = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : null;
 const production = process.env.NODE_ENV === 'production';
 if (production && (!publicOrigin || !publicOrigin.startsWith('https://'))) throw new Error('PUBLIC_ORIGIN must be your HTTPS public domain in production');
@@ -323,10 +325,37 @@ const mediaTypes = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'document'
 };
-accountRouter.get('/quick-replies', (req, res) => res.json({ replies: store.quickReplies(req.account.id) }));
-accountRouter.post('/quick-replies', (req, res) => res.json({ reply: store.saveQuickReply(req.account.id, null, req.body) }));
-accountRouter.put('/quick-replies/:replyId', (req, res) => res.json({ reply: store.saveQuickReply(req.account.id, req.params.replyId, req.body) }));
-accountRouter.delete('/quick-replies/:replyId', (req, res) => { store.deleteQuickReply(req.account.id, req.params.replyId); res.json({ ok: true }); });
+app.use(['/api/quick-replies', '/api/quick-reply-assets'], (req, res, next) => {
+  if (!entitlement(req.user).active) throw new AppError(403, '订阅未开通或已到期');
+  next();
+});
+accountRouter.all(['/quick-replies', '/quick-replies/:replyId'], () => { throw new AppError(409, '快捷回复已升级为用户共享，请刷新页面后重试'); });
+app.get('/api/quick-replies', (req, res) => res.json({ replies: store.userQuickReplies(req.user.id) }));
+app.post('/api/quick-replies', (req, res) => res.json({ reply: store.saveUserQuickReply(req.user.id, null, req.body) }));
+app.put('/api/quick-replies/:replyId', (req, res) => res.json({ reply: store.saveUserQuickReply(req.user.id, req.params.replyId, req.body) }));
+app.delete('/api/quick-replies/:replyId', (req, res) => { store.deleteUserQuickReply(req.user.id, req.params.replyId); res.json({ ok: true }); });
+app.post('/api/quick-reply-assets', express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
+  const mime = req.query.mime, name = req.query.name;
+  if (typeof mime !== 'string' || !Object.hasOwn(mediaTypes, mime) || typeof name !== 'string' || !name.trim() || name.length > 200) throw new AppError(400, '文件类型或名称无效');
+  if (!Buffer.isBuffer(req.body) || !req.body.length) throw new AppError(400, '请选择非空附件（最大 20MB）');
+  const item = { id: randomBytes(16).toString('hex'), name: name.replace(/[\x00-\x1f\x7f/\\]/g, '_'), mime, type: mediaTypes[mime], size: req.body.length };
+  const dir = quickReplyMediaDir(dataDir, req.user.id); await mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${item.id}.bin`); await writeFile(file, req.body, { mode: 0o600 });
+  try { store.addQuickReplyAsset(req.user.id, item); } catch (error) { await rm(file, { force: true }); throw error; }
+  res.json({ attachment: store.quickReplyAsset(req.user.id, item.id) });
+});
+app.get('/api/quick-reply-assets/:asset', (req, res) => {
+  const item = store.quickReplyAsset(req.user.id, req.params.asset);
+  if (!item || !/^[a-f0-9]{32}$/.test(item.id)) throw new AppError(404, '附件不存在');
+  res.type(item.mime); if (item.type === 'document') res.attachment(item.name);
+  res.sendFile(path.join(quickReplyMediaDir(dataDir, req.user.id), `${item.id}.bin`));
+});
+accountRouter.post('/quick-reply-attachments', async (req, res) => {
+  const asset = store.quickReplyAsset(req.user.id, req.body?.attachment);
+  if (!asset) throw new AppError(404, '快捷回复附件不存在');
+  const attachment = await materializeQuickReplyAsset(store, req.user.id, req.account.id, asset, req.runtime.mediaDir, dataDir);
+  res.json({ attachment });
+});
 accountRouter.post('/attachments', express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
   const mime = req.query.mime, name = req.query.name;
   if (typeof mime !== 'string' || !Object.hasOwn(mediaTypes, mime) || typeof name !== 'string' || !name.trim() || name.length > 200) throw new AppError(400, '文件类型或名称无效');
