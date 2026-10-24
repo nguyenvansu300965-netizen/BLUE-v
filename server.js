@@ -107,12 +107,20 @@ app.get('/api/admin/numbers', (req, res) => res.json({ accounts: store.db.prepar
 app.post('/api/admin/numbers', (req, res) => { rate(`activation:${req.user.id}`, 30, 60000); res.status(201).json({ account: poolView(store.createManaged(req.user.id, req.body?.label, req.body?.activationCode)) }); });
 app.get('/api/admin/numbers/:id/state', async (req, res) => {
   const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
-  const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed !== 2 ? rt.state.qr : null, error: rt.state.error, progress: rt.state.progress });
+  const rt = await runtime(account); res.json({ ...poolView(account), qr: account.managed !== 2 ? rt.state.qr : null, pairing: account.managed !== 2 ? rt.state.pairing : null, error: rt.state.error, progress: rt.state.progress });
 });
 app.post('/api/admin/numbers/:id/connect', async (req, res) => {
   const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再管理连接');
   const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
   void rt.connect().catch(() => {}); res.status(202).json({ ok: true });
+});
+app.post('/api/admin/numbers/:id/pairing', async (req, res) => {
+  const account = store.account(req.params.id); if (!account || account.managed === 2) throw new AppError(400, '请先收回托管号码再管理连接');
+  if (req.body?.cancel !== true) rate(`pairing:${req.user.id}:${account.id}`, 5, 60000);
+  const rt = await runtime(account); if (rt.handover) throw new AppError(409, '号码正在分配');
+  const pairing = req.body?.cancel === true ? (await rt.cancelPairing(), null) : await rt.requestPairingCode(req.body?.phone);
+  if (store.session(req.sessionToken)?.id !== req.user.id) throw new AppError(401, '请重新登录');
+  res.json({ pairing });
 });
 app.post('/api/admin/numbers/:id/sync', async (req, res) => {
   const account = store.account(req.params.id); if (!account) throw new AppError(404, '号码不存在');
@@ -279,6 +287,13 @@ accountRouter.post('/connect', async (req, res) => {
   if (req.body?.restart === true) await req.runtime.stop();
   void req.runtime.connect().catch(() => req.runtime.stop('blocked'));
   res.status(202).json({ ok: true });
+});
+accountRouter.post('/pairing', async (req, res) => {
+  if (req.user.role !== 'admin' || req.account.managed) throw new AppError(403, '仅管理员可管理号码关联');
+  if (req.body?.cancel !== true) rate(`pairing:${req.user.id}:${req.account.id}`, 5, 60000);
+  const pairing = req.body?.cancel === true ? (await req.runtime.cancelPairing(), null) : await req.runtime.requestPairingCode(req.body?.phone);
+  if (store.session(req.sessionToken)?.id !== req.user.id) throw new AppError(401, '请重新登录');
+  res.json({ pairing });
 });
 accountRouter.post('/logout', async (req, res) => { if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码'); if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接'); await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.patch('/contacts', (req, res) => {

@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeWaMessage, messageRejection, messageEnvelope, toStoredJid, toWaJid, stanzaId, receiptAck, mergeReceipt } from './messages.js';
+import { recipientJid, normalizeWaMessage, messageRejection, messageEnvelope, toStoredJid, toWaJid, stanzaId, receiptAck, mergeReceipt } from './messages.js';
 import { Automation, loadFlows, menuText, renderReplyText } from './automation.js';
 import { sendFlow } from './flow-sender.js';
 import { AppError } from './store.js';
@@ -21,7 +21,8 @@ export class WhatsAppAccount {
     this.contactLookups = new Map(); this.contactQueue = Promise.resolve();
     this.mediaDownloads = new Map(); this.mediaQueue = Promise.resolve();
     this.clients = new Map(); this.generation = 0; this.connecting = false; this.client = null;
-    this.state = { status: 'idle', qr: null, user: null, error: null };
+    this.activePairingPhone = ''; this.pairingRequest = null;
+    this.state = { status: 'idle', qr: null, pairing: null, user: null, error: null };
     this.receiver = { ready: false, received: 0, rejected: 0, lastEventAt: null, lastMessageAt: null, error: null };
     this.lastAutomation = null; this.sync = { status: 'idle', imported: 0, error: null }; this.syncRetries = 0;
   }
@@ -48,7 +49,7 @@ export class WhatsAppAccount {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected' || !this.state.user?.id) throw new AppError(409, '请先扫码连接此号码');
   }
-  snapshot(role = 'admin') { return { snapshot: { source: this.snapshotSource, sequence: ++this.snapshotSequence, at: Date.now() }, ...this.state, ...(role !== 'admin' ? { qr: null } : {}), account: this.account, messages: this.store.messages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
+  snapshot(role = 'admin') { return { snapshot: { source: this.snapshotSource, sequence: ++this.snapshotSequence, at: Date.now() }, ...this.state, ...(role !== 'admin' ? { qr: null, pairing: null } : {}), account: this.account, messages: this.store.messages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
     for (const [response, valid] of this.clients) {
       if (!valid()) { response.write('event: revoked\ndata: {}\n\n'); response.end(); this.clients.delete(response); continue; }
@@ -80,6 +81,11 @@ export class WhatsAppAccount {
       this.receiver.error = event.code === 'MESSAGE_SERIALIZATION' ? '新消息解析异常' : event.code === 'RECEIVER_BINDING' ? '消息监听暂不可用，正在重新绑定' : '备用接收通道暂不可用'; this.broadcast();
     } else if (event.type === 'progress') {
       this.update({ stage: ['browser', 'page', 'inject'].includes(event.stage) ? event.stage : null, progress: String(event.detail || '').slice(0, 200) });
+    } else if (event.type === 'pairing_code') {
+      const code = typeof event.code === 'string' ? event.code.replace(/[\s-]/g, '').toUpperCase() : '';
+      if (this.activePairingPhone && !this.state.authenticated && /^[A-Z0-9]{8}$/.test(code)) this.update({ pairing: { phone: this.activePairingPhone, code, status: 'ready' } });
+    } else if (['pairing_expired', 'pairing_error'].includes(event.type)) {
+      if (this.activePairingPhone) this.update({ pairing: { phone: this.activePairingPhone, code: null, status: event.type === 'pairing_expired' ? 'expired' : 'error' } });
     } else if (event.type === 'qr_image' && typeof event.image === 'string' && event.image.startsWith('data:image/png;base64,') && event.image.length < 1000000) {
       clearTimeout(this.startupTimer);
       if (!this.state.authenticated && this.state.status !== 'connected') this.update({ status: 'qr', qr: event.image, error: null, progress: null });
@@ -101,6 +107,7 @@ export class WhatsAppAccount {
         this.startupTimer.unref();
       }
 
+      if (event.authenticated || event.status === 'connected') { this.activePairingPhone = ''; this.state.pairing = null; }
       this.update({ status: event.status, user, authenticated: Boolean(event.authenticated || event.status === 'connected'), progress: missingIdentity ? '正在核实 WhatsApp 登录身份，尚未取得当前账号，请等待二维码或登录完成…' : event.authenticated && event.status !== 'connected' ? '已扫码，正在关联设备并同步，请勿重复扫码或重新连接…' : this.state.progress, qr: event.authenticated || event.status === 'connected' ? null : this.state.qr, error: event.status === 'disconnected' ? `WhatsApp 通信流未就绪（${event.stream?.mode || '未知'}/${event.stream?.info || '未知'}），正在等待恢复` : null });
       if (event.status === 'connected') {
         clearTimeout(this.startupTimer);
@@ -147,6 +154,37 @@ export class WhatsAppAccount {
       this.update({ error: 'WA-JS 未能初始化，请检查 WhatsApp 网页可达性并重试' });
     }
   }
+  requestPairingCode(input) {
+    let phone;
+    try { phone = recipientJid(input).split('@')[0]; } catch { return Promise.reject(new AppError(400, '请输入含国家区号的手机号码（7–15 位数字）')); }
+    if (this.state.authenticated || this.state.status === 'connected') return Promise.reject(new AppError(409, '此号码已关联，请先退出原会话后再关联其他手机'));
+    if (this.pairingRequest) return this.pairingRequest.phone === phone ? this.pairingRequest.promise : Promise.reject(new AppError(409, '正在生成配对码，请稍后再试'));
+    const operation = { phone };
+    operation.promise = (async () => {
+      await this.connect();
+      const client = this.client, generation = this.generation;
+      if (this.state.authenticated || this.state.status === 'connected') throw new AppError(409, '此号码已关联，无需再次获取配对码');
+      if (!client || !this.store.allowed(this.account)) throw new AppError(409, '浏览器尚未就绪，请查看连接状态后重试');
+      const refresh = this.activePairingPhone === phone && this.state.pairing?.status === 'expired';
+      this.activePairingPhone = phone; this.update({ pairing: { phone, code: null, status: 'loading' } });
+      try {
+        const raw = await client.requestPairingCode(phone, refresh), code = typeof raw === 'string' ? raw.replace(/[\s-]/g, '').toUpperCase() : '';
+        if (generation !== this.generation || client !== this.client || this.activePairingPhone !== phone || !this.store.allowed(this.account)) throw new AppError(409, '连接或关联方式已变更，请重试');
+        if (!/^[A-Z0-9]{8}$/.test(code)) throw Error('INVALID_PAIRING_CODE');
+        clearTimeout(this.startupTimer); this.update({ pairing: { phone, code, status: 'ready' } });
+        return this.state.pairing;
+      } catch (error) {
+        if (generation === this.generation && this.activePairingPhone === phone) this.update({ pairing: { phone, code: null, status: 'error' } });
+        if (error instanceof AppError) throw error;
+        throw new AppError(400, '配对码生成失败，请确认手机号码和 WhatsApp 网络后重试');
+      }
+    })().finally(() => { if (this.pairingRequest === operation) this.pairingRequest = null; });
+    this.pairingRequest = operation; return operation.promise;
+  }
+  async cancelPairing() {
+    this.activePairingPhone = ''; this.update({ pairing: null });
+    await this.client?.cancelPairing?.();
+  }
   async connect() {
     if (this.handover) throw new AppError(409, '号码正在分配');
     if (!this.store.allowed(this.account)) throw new AppError(403, '没有使用权限');
@@ -186,6 +224,7 @@ export class WhatsAppAccount {
     } finally { if (current === this.generation) this.connecting = false; }
   }
   stop(status = 'idle', preserveClients = false) {
+    this.activePairingPhone = ''; this.state.pairing = null;
     this.generation++; this.pendingReceipts.clear(); clearTimeout(this.timer); clearTimeout(this.startupTimer); clearTimeout(this.syncTimer); this.connecting = false;
     this.receiver.ready = false;
     const client = this.client; this.client = null;

@@ -298,3 +298,26 @@ test('state snapshots carry monotonic ordering metadata per runtime without chan
     const c = first.snapshot('user'); assert.ok(c.snapshot.sequence > b.snapshot.sequence); assert.equal(c.messages[0].text, 'Newest');
   } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('phone pairing validates numbers, deduplicates requests, hides credentials and clears them after confirmation', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-pairing-')); const store = new Store(dir); let rt;
+  try {
+    await store.bootstrap('pair-admin', '123456'); const account = store.createAccount(store.byName('pair-admin').id, 'One');
+    let calls = 0, resolve;
+    rt = await new WhatsAppAccount(account, store, dir, { createClient: () => ({ start: async () => {}, close: async () => {}, cancelPairing: async () => {}, requestPairingCode: async phone => { calls++; assert.equal(phone, '8613800138000'); return new Promise(r => { resolve = r; }); } }) }).init();
+    await assert.rejects(rt.requestPairingCode('invalid'), /国家区号/);
+    const first = rt.requestPairingCode('+86 138-0013-8000'), duplicate = rt.requestPairingCode('8613800138000');
+    while (!resolve) await new Promise(r => setTimeout(r, 1));
+    assert.equal(first, duplicate); assert.equal(calls, 1);
+    await assert.rejects(rt.requestPairingCode('123456789'), /正在生成/);
+    resolve('ABCD-1234'); assert.equal((await first).code, 'ABCD1234');
+    assert.equal(rt.snapshot('user').pairing, null); assert.equal(rt.snapshot('admin').pairing.code, 'ABCD1234');
+    await rt.onClientEvent({ type: 'pairing_expired' }, rt.generation); assert.equal(rt.state.pairing.code, null);
+    await rt.onClientEvent({ type: 'pairing_code', code: 'EFGH5678' }, rt.generation); assert.equal(rt.state.pairing.code, 'EFGH5678');
+    await rt.cancelPairing(); assert.equal(rt.state.pairing, null);
+    const pending = rt.requestPairingCode('8613800138000');
+    while (calls < 2) await new Promise(r => setTimeout(r, 1));
+    await rt.stop(); resolve('IJKL1234'); await assert.rejects(pending, /已变更/); assert.equal(rt.state.pairing, null);
+    rt.state.authenticated = true; await assert.rejects(rt.requestPairingCode('8613800138000'), /已关联/);
+  } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});

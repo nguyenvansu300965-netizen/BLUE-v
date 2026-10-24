@@ -204,6 +204,7 @@ function renderState(state) {
   $('device-label').textContent = `平台账号：${me.username} · 号码备注：${state.account.label}`;
   $('connect').disabled = connected || state.status === 'qr' || state.authenticated;
   $('connect').textContent = state.authenticated && !connected ? '正在完成登录…' : state.status === 'connecting' ? '重新连接' : '连接 WhatsApp';
+  renderPairing('device', state);
   const last = state.automation.last;
   $('flow-status').textContent = `${state.automation.enabled ? '已启用' : '未启用'}${last ? ` · ${last.node}：${last.ok ? '已提交，显示需验证' : `发送失败：${last.error || '请检查号码连接'}`}` : ''}`;
   renderChats(); renderMessages();
@@ -381,7 +382,7 @@ $('remove-account').onclick = async () => {
 };
 $('sync-messages').onclick = async () => { try { const result = await api(accountPath('/sync'), { method: 'POST' }); notice(result.sync.error || '已开始同步，完成后会话列表会自动更新。'); } catch (error) { notice(error.message); } };
 $('open-device').onclick = () => { if (selectedAccount) $('device-dialog').showModal(); };
-$('close-device').onclick = () => $('device-dialog').close();
+$('close-device').onclick = () => { resetPairingView('device'); $('device-dialog').close(); };
 $('connect').onclick = async () => { try { await api(accountPath('/connect'), { method: 'POST', body: JSON.stringify({ restart: connectionStatus === 'connecting' }) }); } catch (error) { notice(error.message); } };
 $('logout').onclick = async () => {
   if (!confirm('退出并清除此号码的 WhatsApp 登录会话？不会删除平台账号。')) return;
@@ -691,7 +692,7 @@ async function loadNumberPool(users = poolUsers) {
         catch (error) { notice(error.message); save.disabled = false; }
       }; row.append(save);
       if (item.managed !== 2) {
-        const connect = document.createElement('button'); connect.type = 'button'; connect.className = 'outline'; connect.textContent = '扫码 / 连接状态'; connect.onclick = () => openPoolDevice(item); row.append(connect);
+        const connect = document.createElement('button'); connect.type = 'button'; connect.className = 'outline'; connect.textContent = '关联设备 / 连接状态'; connect.onclick = () => openPoolDevice(item); row.append(connect);
       }
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet danger'; remove.textContent = '删除号码'; remove.dataset.action = 'delete-number';
       remove.onclick = async () => {
@@ -723,7 +724,7 @@ $('number-activation-form').onsubmit = async event => {
   finally { if (epoch === authEpoch && me?.id === owner) $('number-activation-submit').disabled = false; }
 };
 window.addEventListener('account-changed', () => { if (!me || me.role !== 'admin') closeNumberActivation(); });
-function closePoolDevice() { poolDialogId = ''; clearTimeout(poolPoll); $('pool-device-dialog').close(); $('pool-qr').removeAttribute('src'); $('pool-qr').hidden = true; }
+function closePoolDevice() { resetPairingView('pool'); poolDialogId = ''; clearTimeout(poolPoll); $('pool-device-dialog').close(); $('pool-qr').removeAttribute('src'); $('pool-qr').hidden = true; }
 function openPoolDevice(item) { closePoolDevice(); poolDialogId = item.id; $('pool-device-status').textContent = '正在读取连接状态…'; $('pool-connect').disabled = true; $('pool-device-title').textContent = item.label; $('pool-device-dialog').showModal(); void refreshPoolDevice(); }
 async function refreshPoolDevice() {
   const id = poolDialogId, epoch = authEpoch; if (!id || me?.role !== 'admin') return;
@@ -731,6 +732,7 @@ async function refreshPoolDevice() {
     const state = await api(`/api/admin/numbers/${id}/state`); if (id !== poolDialogId || epoch !== authEpoch) return;
     $('pool-qr').hidden = !state.qr; if (state.qr) $('pool-qr').src = state.qr;
     $('pool-device-status').textContent = `${statusNames[state.status] || state.status}${state.number ? ` · +${state.number}` : ''}${state.error ? ` · ${state.error}` : ''}`;
+    renderPairing('pool', state);
     $('pool-connect').disabled = state.status === 'connected' || state.status === 'connecting' || state.status === 'qr' || state.managed === 2;
   } catch (error) { if (id === poolDialogId && epoch === authEpoch) $('pool-device-status').textContent = error.message; }
   if (id === poolDialogId && epoch === authEpoch) poolPoll = setTimeout(refreshPoolDevice, 1500);
@@ -916,3 +918,56 @@ $('receiver-diagnostics-copy').onclick = async () => {
   try { await navigator.clipboard.writeText($('receiver-diagnostics-text').value); notice('诊断已复制'); }
   catch { $('receiver-diagnostics-text').focus(); $('receiver-diagnostics-text').select(); notice('请手动复制已选中的诊断内容'); }
 };
+
+
+const pairViews = { device: { token: 0, busy: false }, pool: { token: 0, busy: false } };
+function pairingEndpoint(prefix) {
+  return prefix === 'pool' ? poolDialogId && `/api/admin/numbers/${poolDialogId}/pairing` : selectedAccount && `/api/accounts/${selectedAccount}/pairing`;
+}
+function resetPairingView(prefix) {
+  pairViews[prefix].token++; pairViews[prefix].busy = false;
+  $(`${prefix}-login-method`).value = 'qr'; $(`${prefix}-pair-panel`).hidden = true;
+  $(`${prefix}-pair-phone`).value = ''; $(`${prefix}-pair-code`).textContent = ''; $(`${prefix}-pair-error`).textContent = ''; $(`${prefix}-pair-generate`).disabled = false;
+  if (prefix === 'device') { $('qr-box').hidden = false; $('connect').hidden = false; } else $('pool-connect').hidden = false;
+}
+function renderPairing(prefix, state) {
+  const phoneMode = $(`${prefix}-login-method`).value === 'phone';
+  $(`${prefix}-pair-panel`).hidden = !phoneMode;
+  if (prefix === 'device') { $('qr-box').hidden = phoneMode; $('connect').hidden = phoneMode; }
+  else { $('pool-qr').hidden = phoneMode || !state.qr; $('pool-connect').hidden = phoneMode; }
+  const dialog = prefix === 'device' ? $('device-dialog') : $('pool-device-dialog');
+  if (!dialog.open || me?.role !== 'admin') return;
+  const pairing = state.pairing;
+  $(`${prefix}-pair-code`).textContent = pairing?.code ? `${pairing.code.slice(0, 4)}-${pairing.code.slice(4)}` : '';
+  if (pairing?.phone && !$(`${prefix}-pair-phone`).value) $(`${prefix}-pair-phone`).value = pairing.phone;
+  const errors = { expired: '配对码已过期，请重新获取', error: '配对码生成失败，请重新获取', loading: '正在生成配对码…' };
+  if (pairing?.status) $(`${prefix}-pair-error`).textContent = errors[pairing.status] || '';
+  else if (state.authenticated || state.status === 'connected') $(`${prefix}-pair-error`).textContent = '已关联设备';
+  $(`${prefix}-pair-generate`).disabled = pairViews[prefix].busy || Boolean(state.authenticated || state.status === 'connected');
+}
+for (const prefix of ['device', 'pool']) {
+  $(`${prefix}-login-method`).onchange = async () => {
+    const endpoint = pairingEndpoint(prefix), epoch = authEpoch, token = ++pairViews[prefix].token;
+    pairViews[prefix].busy = false;
+    renderPairing(prefix, {}); $(`${prefix}-pair-code`).textContent = ''; $(`${prefix}-pair-error`).textContent = '';
+    if ($(`${prefix}-login-method`).value === 'qr' && endpoint && me?.role === 'admin') {
+      try { await api(endpoint, { method: 'POST', body: JSON.stringify({ cancel: true }) }); }
+      catch (error) { if (epoch === authEpoch && token === pairViews[prefix].token) $(`${prefix}-pair-error`).textContent = error.message; }
+    }
+  };
+  $(`${prefix}-pair-generate`).onclick = async () => {
+    const endpoint = pairingEndpoint(prefix), epoch = authEpoch, view = pairViews[prefix];
+    if (!endpoint || view.busy || me?.role !== 'admin') return;
+    const token = ++view.token; view.busy = true; $(`${prefix}-pair-generate`).disabled = true;
+    $(`${prefix}-pair-code`).textContent = ''; $(`${prefix}-pair-error`).textContent = '正在启动浏览器并获取配对码…';
+    try {
+      const { pairing } = await api(endpoint, { method: 'POST', body: JSON.stringify({ phone: $(`${prefix}-pair-phone`).value }) });
+      if (epoch !== authEpoch || token !== view.token || endpoint !== pairingEndpoint(prefix)) return;
+      renderPairing(prefix, { pairing });
+    } catch (error) { if (epoch === authEpoch && token === view.token) $(`${prefix}-pair-error`).textContent = error.message; }
+    finally { if (epoch === authEpoch && token === view.token) { view.busy = false; $(`${prefix}-pair-generate`).disabled = false; } }
+  };
+}
+$('device-dialog').addEventListener('close', () => { if (!$('device-dialog').open) resetPairingView('device'); });
+$('pool-device-dialog').addEventListener('close', () => { if (!$('pool-device-dialog').open) resetPairingView('pool'); });
+window.addEventListener('account-changed', () => { resetPairingView('device'); resetPairingView('pool'); });

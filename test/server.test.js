@@ -74,6 +74,10 @@ test('multi-tenant registration, admin grants, account quotas, isolation, revoca
     assert.equal((await bob.request(`${base}/sync`, { method: 'POST' })).status, 404);
     assert.equal((await alice.request(`${base}/sync`, { method: 'POST' })).status, 409);
     assert.equal((await bob.request(`${base}/connect`, { method: 'POST' })).status, 404);
+    assert.equal((await alice.request(`${base}/pairing`, { method: 'POST', body: { phone: '123456789' } })).status, 403);
+    assert.equal((await admin.request(`/api/admin/numbers/${account.id}/pairing`, { method: 'POST', body: { phone: 'invalid' } })).status, 400);
+    assert.equal((await bob.request(`/api/admin/numbers/${account.id}/pairing`, { method: 'POST', body: { phone: '123456789' } })).status, 403);
+
     assert.equal((await bob.request(`${base}/flows`)).status, 404);
     assert.equal((await bob.request(`${base}/messages/PRIVATE/media`, { method: 'POST' })).status, 404);
     assert.equal((await bob.request(`${base}/messages/missing/forward`, { method: 'POST', body: { phone: '123456789' } })).status, 404);

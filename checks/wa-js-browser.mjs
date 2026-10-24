@@ -179,6 +179,16 @@ try {
   assert.equal(diagnostic.bridge.schema, 2); assert.ok(diagnostic.bridge.byType.chat); assert.ok(diagnostic.bridge.lastEmitted); assert.ok(diagnostic.bridge.byType.chat.serializedBody.length > 0); assert.ok(diagnostic.bridge.observed > 0); assert.ok(diagnostic.bridge.emitted > 0);
   assert.doesNotMatch(JSON.stringify(diagnostic), /Recovered model attributes|Customer|123456789|Text from documented Model.get|test-qr-only/);
   assert.ok(diagnostic.bridge.samples.every(sample => typeof sample.body.kind === 'string' && !('value' in sample.body)));
+  await page.evaluate(() => {
+    window.pairingInputs = [];
+    window.WPP.conn.startLinkDeviceCodeForPhoneNumber = async (phone, push) => { window.pairingInputs.push({ phone, push }); return 'ABCD1234'; };
+    window.WPP.conn.cancelLinkDeviceCode = () => { window.pairCancelled = true; };
+  });
+  assert.equal(await client.requestPairingCode('8613800138000'), 'ABCD1234');
+  assert.deepEqual(await page.evaluate(() => window.pairingInputs), [{ phone: '8613800138000', push: true }]);
+  await page.evaluate(() => { window.WPP.conn.refreshLinkDeviceCode = async () => { window.pairRefreshed = true; return 'EFGH5678'; }; });
+  assert.equal(await client.requestPairingCode('8613800138000', true), 'EFGH5678'); assert.equal(await page.evaluate(() => window.pairRefreshed), true);
+  await client.cancelPairing(); assert.equal(await page.evaluate(() => window.pairCancelled), true);
   const reread = await client.readMessage('false_123456789@c.us_EMPTY_TEXT', '123456789@s.whatsapp.net');
   assert.equal(reread.body, 'Recovered model attributes'); assert.equal(reread.history, true);
   await page.evaluate(() => {

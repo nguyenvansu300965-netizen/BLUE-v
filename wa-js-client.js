@@ -235,6 +235,9 @@ export function installWaBridge() {
       listen('conn.authenticated', () => { authenticated = true; emit({ type: 'state', status: 'connecting', authenticated: true, user: null }); void refresh(); });
       listen('conn.require_auth', () => { authenticated = false; selfPhone = { identity: '', number: '', attemptedAt: 0 }; domQrSeen = false; lastImage = ''; lastQr = ''; lastState = ''; void refresh(); });
       for (const event of ['conn.main_ready', 'conn.online', 'conn.stream_mode_changed', 'conn.stream_info_changed']) listen(event, () => { void refresh(); });
+      listen('conn.link_code_change', code => emit({ type: 'pairing_code', code }));
+      listen('conn.link_code_expired', () => emit({ type: 'pairing_expired' }));
+      listen('conn.link_code_error', () => emit({ type: 'pairing_error' }));
       listen('conn.logout', () => emit({ type: 'logout' }));
       listen('conn.needs_update', () => emit({ type: 'needs_update' }));
       listen('chat.new_message', msg => receiveMessage(msg));
@@ -292,7 +295,8 @@ export class WaJsClient {
   constructor({ profileDir, onEvent, launch = options => puppeteer.launch(options) }) {
     this.profileDir = profileDir; this.onEvent = onEvent; this.launch = launch; this.closed = false;
   }
-  async start() {
+  start() { this.starting ||= this.startBrowser(); return this.starting; }
+  async startBrowser() {
     this.onEvent({ type: 'progress', stage: 'browser', detail: '正在启动 Chromium 浏览器…' });
     const executablePath = await browserExecutable();
     await mkdir(this.profileDir, { recursive: true, mode: 0o700 });
@@ -342,6 +346,20 @@ export class WaJsClient {
     }
     if (response && response.status() >= 400) throw Object.assign(new Error('WhatsApp page was rejected'), { code: `WEB_HTTP_${response.status()}` });
     await this.inject();
+  }
+  async requestPairingCode(phone, refresh = false) {
+    if (!this.page) await this.start();
+    if (this.closed) throw Error('CLIENT_CLOSED');
+    await this.page.waitForFunction(() => window.WPP?.isReady && typeof window.WPP.conn.startLinkDeviceCodeForPhoneNumber === 'function', { timeout: 30000 });
+    return this.page.evaluate(async ({ number, refresh }) => {
+      if (window.WPP.conn.isAuthenticated()) throw Error('ALREADY_AUTHENTICATED');
+      let timer;
+      try { return await Promise.race([refresh && typeof window.WPP.conn.refreshLinkDeviceCode === 'function' ? window.WPP.conn.refreshLinkDeviceCode() : window.WPP.conn.startLinkDeviceCodeForPhoneNumber(number, true), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('PAIRING_TIMEOUT')), 30000); })]); }
+      finally { clearTimeout(timer); }
+    }, { number: phone, refresh });
+  }
+  async cancelPairing() {
+    if (this.page && !this.closed) await this.page.evaluate(() => window.WPP?.conn.cancelLinkDeviceCode?.());
   }
   observeHealth(event, now = Date.now()) {
     if (event.type === 'receiver_heartbeat' || event.type === 'state' && event.status === 'connected') this.lastBridgeAt = now;

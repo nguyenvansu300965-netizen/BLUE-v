@@ -66,6 +66,25 @@ try {
   await page.click(`${poolRow} button`); assert.equal((await allocated).status(), 200);
   await page.waitForFunction(() => document.getElementById('admin-numbers').textContent.includes('pool-customer'));
   const pool = store.managedAccounts()[0]; store.remember(pool.id, { id: 'PRIVATE', jid: '123456789@s.whatsapp.net', name: 'Customer', text: 'Only assigned user can see', time: Date.now() });
+  await page.setRequestInterception(true);
+  let pairingRequest = null;
+  const pairingInterceptor = request => {
+    if (request.url().endsWith(`/api/admin/numbers/${pool.id}/pairing`) && request.method() === 'POST') {
+      const body = JSON.parse(request.postData()); pairingRequest = body;
+      void request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ pairing: body.cancel ? null : { phone: '8613800138000', code: 'ABCD1234', status: 'ready' } }) });
+    } else void request.continue();
+  };
+  page.on('request', pairingInterceptor);
+  await page.evaluate(item => openPoolDevice(item), pool);
+  await page.select('#pool-login-method', 'phone'); await page.type('#pool-pair-phone', '8613800138000'); await page.click('#pool-pair-generate');
+  await page.waitForFunction(() => document.getElementById('pool-pair-code').textContent === 'ABCD-1234');
+  assert.equal(pairingRequest.phone, '8613800138000'); assert.equal(await page.$eval('#pool-qr', el => el.hidden), true);
+  await page.select('#pool-login-method', 'qr');
+  await page.waitForFunction(() => document.getElementById('pool-pair-panel').hidden);
+  await page.click('#pool-device-close'); assert.equal(await page.$eval('#pool-pair-phone', el => el.value), '');
+  assert.equal(await page.$eval('#pool-pair-code', el => el.textContent), '');
+  await page.setRequestInterception(false); page.off('request', pairingInterceptor);
+
   await login(customer, 'pool-customer'); await customer.waitForFunction(() => Array.from(document.getElementById('account-select').options).filter(o => o.value).length === 2);
   for (const id of ['add-account', 'open-device', 'remove-account']) assert.equal(await customer.$eval(`#${id}`, el => el.hidden), true, `legacy user control ${id} must be hidden`);
   for (const action of ['connect', 'logout']) assert.equal(await customer.evaluate(async ({ id, action }) => (await fetch(`/api/accounts/${id}/${action}`, { method: 'POST' })).status, { id: legacy.id, action }), 403);
