@@ -435,7 +435,7 @@ accountRouter.post('/flows', async (req, res) => {
 });
 app.use('/api/accounts/:id', accountRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));
-app.use(express.static(path.join(root, 'public')));
+app.use(express.static(path.join(root, 'public'), { setHeaders(res, file) { if (/\.(html|js)$/.test(file)) res.set('Cache-Control', 'no-store'); } }));
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   const status = error instanceof AppError ? error.status : [400, 404, 413].includes(error.status) ? error.status : 500;

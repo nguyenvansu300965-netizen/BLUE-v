@@ -283,3 +283,18 @@ test('rejected live messages retain actionable per-reason counters and sanitized
     assert.doesNotMatch(JSON.stringify(rt.receiver), /SECRET-ID|123456789|private text/);
   } finally { await rt?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('state snapshots carry monotonic ordering metadata per runtime without changing message or QR isolation', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-snapshot-order-')); const store = new Store(dir); const runtimes = [];
+  try {
+    await store.bootstrap('order-admin', '123456'); const account = store.createAccount(store.byName('order-admin').id, 'One');
+    const first = await new WhatsAppAccount(account, store, dir).init(), second = await new WhatsAppAccount(account, store, dir).init(); runtimes.push(first, second);
+    first.state.qr = 'private-qr';
+    const a = first.snapshot('user'), b = first.snapshot('admin');
+    assert.equal(a.snapshot.source, b.snapshot.source); assert.ok(b.snapshot.sequence > a.snapshot.sequence); assert.ok(b.snapshot.at >= a.snapshot.at);
+    assert.notEqual(second.snapshot('user').snapshot.source, a.snapshot.source);
+    assert.equal(a.qr, null); assert.equal(b.qr, 'private-qr');
+    store.remember(account.id, { id: 'NEW', jid: '123456789@s.whatsapp.net', text: 'Newest', time: Date.now() });
+    const c = first.snapshot('user'); assert.ok(c.snapshot.sequence > b.snapshot.sequence); assert.equal(c.messages[0].text, 'Newest');
+  } finally { await Promise.all(runtimes.map(rt => rt.stop())); store.close(); await rm(dir, { recursive: true, force: true }); }
+});

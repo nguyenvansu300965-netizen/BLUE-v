@@ -109,14 +109,26 @@ function switchAccount() {
   let cancelled = false, pending = false, controller = null, source = null;
   let lastSnapshotAt = 0, lastActivityAt = Date.now(), openedAt = Date.now(), snapshotVersion = 0;
   const current = () => !cancelled && id === selectedAccount && epoch === authEpoch && owner === me?.id;
+  let appliedSnapshot = null;
+  const applySnapshot = state => {
+    if (!current() || state.account?.id !== id || state.account?.user_id !== owner) return false;
+    const meta = state.snapshot;
+    if (appliedSnapshot && !meta) return false;
+    if (meta && appliedSnapshot) {
+      if (meta.source === appliedSnapshot.source && meta.sequence <= appliedSnapshot.sequence) return false;
+      if (meta.source !== appliedSnapshot.source && meta.at < appliedSnapshot.at) return false;
+    }
+    if (meta) appliedSnapshot = meta;
+    renderState(state); return true;
+  };
   const pullState = async () => {
     if (!current() || pending) return;
     pending = true; const version = snapshotVersion; controller = new AbortController();
     const timeout = setTimeout(() => controller?.abort(), 10000);
     try {
-      const state = await api(`/api/accounts/${id}/state`, { signal: controller.signal });
+      const state = await api(`/api/accounts/${id}/state?poll=${Date.now()}`, { signal: controller.signal, cache: 'no-store' });
       // A delayed fallback response must not replace a newer pushed snapshot.
-      if (current() && version === snapshotVersion && state.account?.id === id && state.account?.user_id === owner) renderState(state);
+      if (current() && (state.snapshot || version === snapshotVersion)) applySnapshot(state);
     } catch (error) { if (current() && error.name !== 'AbortError' && error.name !== 'StaleResponseError') $('status').textContent = '工作台正在重连…'; }
     finally { clearTimeout(timeout); pending = false; controller = null; }
   };
@@ -131,7 +143,8 @@ function switchAccount() {
       try {
         const state = JSON.parse(event.data);
         if (state.account?.id !== id || state.account?.user_id !== owner) return;
-        lastSnapshotAt = lastActivityAt = Date.now(); snapshotVersion++; renderState(state);
+        lastActivityAt = Date.now();
+        if (applySnapshot(state)) { lastSnapshotAt = Date.now(); snapshotVersion++; }
       } catch { void pullState(); }
     };
     next.addEventListener('heartbeat', () => { if (live()) lastActivityAt = Date.now(); });
@@ -141,7 +154,7 @@ function switchAccount() {
   const tick = () => {
     if (!current() || document.hidden) return;
     const now = Date.now();
-    if (!lastSnapshotAt || now - lastSnapshotAt > 7000) void pullState();
+    void pullState();
     // Native EventSource retries errors, but cannot detect every stalled proxy stream.
     if (source?.readyState === 2 || now - lastActivityAt > 20000 || now - Math.max(lastSnapshotAt, openedAt) > 20000) open();
   };

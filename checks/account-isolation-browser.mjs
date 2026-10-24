@@ -116,6 +116,8 @@ try {
   assert.equal((await page.goto(src)).status(), 200, 'original image endpoint is accessible to its owner');
   await page.goBack();
   await page.waitForFunction(() => !document.getElementById('workspace').hidden);
+  await page.waitForFunction(id => Array.from(document.getElementById('account-select').options).some(option => option.value === id), {}, created.id);
+  await page.select('#account-select', created.id);
   await page.evaluate(async ({ id, incoming, imageAsset }) => { closeStream(); const state = await (await fetch(`/api/accounts/${id}/state`)).json(); renderState({ ...state, messages: [{ ...incoming, id: 'voice', text: '[语音]', attachment: { ...imageAsset, type: 'audio', name: 'voice.ogg' } }] }); }, { id: created.id, incoming, imageAsset });
   await page.click('.chat-item');
   assert.equal(await page.$eval('.bubble audio', el => el.controls), true);

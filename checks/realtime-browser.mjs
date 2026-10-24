@@ -31,10 +31,23 @@ try {
   await page.waitForSelector('.chat-item');
   await page.click('.chat-item');
   await page.type('#text', '尚未发送的草稿');
+  // Stale frames can keep arriving and make SSE look healthy. They must neither
+  // suppress fixed polling nor roll the UI back after a newer HTTP snapshot.
+  await page.evaluate(async id => {
+    window.stalePush = await (await fetch(`/api/accounts/${id}/state`)).json();
+    window.stalePushTimer = setInterval(() => window.testStreams.at(-1).onmessage?.({ data: JSON.stringify(window.stalePush) }), 400);
+  }, account.id);
+
   store.remember(account.id, { id: 'NEW-FALLBACK', jid, name: 'Rose', text: '无需刷新自动补读', outgoing: false, time: Date.now() });
-  await page.waitForFunction(() => document.getElementById('messages').textContent.includes('无需刷新自动补读'), { timeout: 12000 });
+  await page.waitForFunction(() => document.getElementById('messages').textContent.includes('无需刷新自动补读'), { timeout: 6000 });
   assert.equal(await page.$eval('#text', el => el.value), '尚未发送的草稿');
   assert.equal(await page.evaluate(() => selectedThread), jid);
+  await page.evaluate(() => { clearInterval(window.stalePushTimer); window.testStreams.at(-1).onmessage({ data: JSON.stringify(window.stalePush) }); });
+  assert.equal(await page.$eval('#messages', el => el.textContent.includes('无需刷新自动补读')), true, 'an older repeated frame cannot remove a newly polled message');
+  await page.evaluate(() => { const legacy = { ...window.stalePush }; delete legacy.snapshot; window.testStreams.at(-1).onmessage({ data: JSON.stringify(legacy) }); });
+  assert.equal(await page.$eval('#messages', el => el.textContent.includes('无需刷新自动补读')), true, 'unversioned buffered frames cannot roll back a versioned snapshot');
+
+
   const oldStreamCount = await page.evaluate(() => { const n = window.testStreams.length; window.testStreams.at(-1).readyState = 2; return n; });
   await page.waitForFunction(count => window.testStreams.length > count, { timeout: 6000 }, oldStreamCount);
   assert.equal(await page.$eval('#text', el => el.value), '尚未发送的草稿', 'reopening SSE preserves the composer');
@@ -46,7 +59,7 @@ try {
     window.freshPushState = { ...state, messages: [...state.messages, { id: 'PUSH-NEWEST', jid: selectedThread, text: '即时推送比慢请求更新', outgoing: false, time: Date.now() }] };
     window.savedApi = api; window.pollWaiting = false;
     api = async (url, options) => {
-      if (url.endsWith('/state')) return new Promise(resolve => { window.pollWaiting = true; window.releaseOldPoll = () => resolve(window.oldPollState); });
+      if (url.split('?')[0].endsWith('/state')) return new Promise(resolve => { window.pollWaiting = true; window.releaseOldPoll = () => resolve(window.oldPollState); });
       return window.savedApi(url, options);
     };
     window.dispatchEvent(new Event('focus'));
@@ -60,7 +73,7 @@ try {
   await page.evaluate(() => {
     window.pollWaiting = false;
     api = async (url, options) => {
-      if (url.endsWith('/state')) return new Promise(resolve => { window.pollWaiting = true; window.releaseForeignPoll = () => resolve(window.freshPushState); });
+      if (url.split('?')[0].endsWith('/state')) return new Promise(resolve => { window.pollWaiting = true; window.releaseForeignPoll = () => resolve(window.freshPushState); });
       return window.savedApi(url, options);
     };
     window.dispatchEvent(new Event('focus'));
